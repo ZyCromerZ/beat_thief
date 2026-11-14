@@ -499,6 +499,7 @@
     <div class="box-header">Queue <span class="counter" id="jobs-count">0</span>
       <span class="hint" id="queue-eta"></span>
       <span class="spacer"></span>
+      <button class="btn sm" id="cancel-all" style="display:none">Cancel all</button>
       <button class="btn sm" id="dismiss-all" style="display:none">Dismiss all</button>
     </div>
     <div class="notice" id="cooldown-notice"></div>
@@ -933,6 +934,7 @@ function renderJobs(jobs) {
   $("#jobs-count").textContent = jobs.length;
   $("#queue-eta").textContent = queueEta(jobs);
   $("#dismiss-all").style.display = jobs.some((j) => ["done", "error", "cancelled"].includes(j.status)) ? "" : "none";
+  $("#cancel-all").style.display = jobs.some((j) => !["done", "error", "cancelled"].includes(j.status)) ? "" : "none";
   const cooling = jobs.filter((j) => j.status === "cooldown");
   const notice = $("#cooldown-notice");
   if (cooling.length) {
@@ -973,6 +975,7 @@ function renderJobs(jobs) {
   }).join("") : `<div class="empty">No downloads in progress.</div>`;
 }
 
+$("#cancel-all").onclick = async () => { await fetch("/api/jobs/cancel", { method: "POST" }); refreshJobs(); };
 $("#dismiss-all").onclick = async () => { await fetch("/api/jobs", { method: "DELETE" }); refreshJobs(); };
 
 document.addEventListener("click", async (e) => {

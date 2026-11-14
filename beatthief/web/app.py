@@ -248,6 +248,17 @@ def retry_job(job_id):
     return "", 204
 
 
+@app.post("/api/jobs/cancel")
+def cancel_all_jobs():
+    """Cancel every job that hasn't finished yet."""
+    with jobs_lock:
+        for job_id, job in jobs.items():
+            if job["status"] not in FINISHED:
+                log.info("Job %s: cancel requested", job_id)
+                job.update(status="cancelled", cooldown=0)
+    return "", 204
+
+
 @app.post("/api/jobs/<job_id>/cancel")
 def cancel_job(job_id):
     """Cancel a job that is queued, waiting, downloading or converting. A running download stops at its
