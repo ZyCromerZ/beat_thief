@@ -58,6 +58,7 @@ def _run_job(job_id, run):
         return
     with jobs_lock:
         url, audio_format = jobs[job_id]["url"], jobs[job_id]["format"]
+        start, end = jobs[job_id]["start"], jobs[job_id]["end"]
     log.info("Job %s started: %s (%s)", job_id, url, audio_format)
     _update(job_id, run, status="downloading", progress=0)
 
@@ -83,7 +84,7 @@ def _run_job(job_id, run):
 
     try:
         paths = downloader.fetch_audio(url, on_progress=on_progress, on_wait=on_wait,
-                                          audio_format=audio_format)
+                                          audio_format=audio_format, start=start, end=end)
         log.info("Job %s finished: %s", job_id, ", ".join(os.path.basename(p) for p in paths))
         if _is_stale(job_id, run):  # cancelled while converting: that step can't be interrupted, so remove its result
             for p in paths:
@@ -157,7 +158,7 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
-def _enqueue(url, source, audio_format, title=None):
+def _enqueue(url, source, audio_format, title=None, start=None, end=None):
     """Add a job and return its id, or None if the same link is already in the queue (waiting, running or
     finished and not dismissed yet). Failed and cancelled ones don't count, so they can be retried."""
     job_id = uuid.uuid4().hex[:10]
@@ -167,29 +168,52 @@ def _enqueue(url, source, audio_format, title=None):
         jobs[job_id] = {
             "id": job_id, "url": url, "source": source, "format": audio_format, "status": "queued",
             "progress": 0, "cooldown": 0, "title": title, "files": [], "error": None,
-            "created": time.time(), "run": 0, "took": None,
+            "created": time.time(), "run": 0, "took": None, "start": start, "end": end,
         }
     executors[source].submit(_run_job, job_id, 0)
     return job_id
 
 
+def _parse_range(rng):
+    """(start, end) in seconds from {"start": .., "end": ..}; each may be missing. Raises ValueError."""
+    try:
+        start = float(rng["start"]) if rng.get("start") not in (None, "") else None
+        end = float(rng["end"]) if rng.get("end") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise ValueError("Invalid start or end time.")
+    if (start is not None and start < 0) or (end is not None and end <= (start or 0)):
+        raise ValueError("The end must be after the start.")
+    return start, end
+
+
 @app.post("/api/jobs")
 def create_jobs():
-    """Body: {"urls": [...], "format": ...}. A playlist link is split into one job per track; they run
+    """Body: {"urls": [...], "format": ..., "ranges": {url: {"start": s, "end": e}}} (seconds, optional: download
+    only that part of a single track). A playlist link is split into one job per track; they run
     one after another through the rate limiter, exactly like tracks pasted one by one."""
     data = request.get_json(silent=True) or {}
     audio_format = data.get("format") or downloader.default_format()
     if audio_format not in downloader.FORMATS:
         return jsonify({"error": "Unsupported format."}), 400
+    ranges = data.get("ranges") if isinstance(data.get("ranges"), dict) else {}
     results = []
     for raw in data.get("urls", []):
         ok, value, source, _ = validate_and_clean_url(str(raw))
         if not ok:
             results.append({"input": raw, "error": value})
             continue
+        rng = ranges.get(raw) if isinstance(ranges.get(raw), dict) else {}
+        try:
+            start, end = _parse_range(rng)
+        except ValueError as e:
+            results.append({"input": raw, "error": str(e)})
+            continue
         if not is_playlist(value):
-            job_id = _enqueue(value, source, audio_format)
+            job_id = _enqueue(value, source, audio_format, start=start, end=end)
             results.append({"input": raw, "id": job_id} if job_id else {"input": raw, "error": DUPLICATE})
+            continue
+        if start is not None or end is not None:
+            results.append({"input": raw, "error": "A time range can't be used with a playlist."})
             continue
         try:
             tracks = downloader.list_playlist(value, source)

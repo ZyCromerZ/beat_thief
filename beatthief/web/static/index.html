@@ -140,6 +140,20 @@
   .link-list li.bad { background: var(--danger-bg); }
   .link-list li.bad .u, .link-list li.bad .tag { color: var(--danger); }
   .link-list li.bad .tag { border-color: var(--danger); }
+  .link-list li { flex-wrap: wrap; }
+  .link-list .trim { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; padding: 2px 0 2px 30px; font: 12px var(--sans); color: var(--fg-muted); }
+  .dur { display: inline-flex; align-items: center; gap: 1px; height: 28px; padding: 0 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font: 13px var(--mono); color: var(--fg); }
+  .dur:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+  .dur.bad { border-color: var(--danger); background: var(--danger-bg); }
+  .dur input { width: 2.2ch; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: center; outline: none; }
+  .dur input::placeholder { color: var(--fg-muted); opacity: .6; }
+  .dur .dur-u { color: var(--fg-muted); font-size: 11px; margin-right: 5px; }
+  .dur .dur-u:last-child { margin-right: 0; }
+  .link-list .rng { width: 112px; height: 28px; padding: 0 8px; font: 13px var(--mono); }
+  .link-list .rng.bad { border-color: var(--danger); background: var(--danger-bg); }
+  .link-list .trim .clear { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 2px 4px; }
+  .link-list .trim .clear:hover { text-decoration: underline; }
+  .link-list .trim .tip { margin-left: auto; font-size: 11px; }
   .link-list .x { background: none; border: 0; color: var(--fg-muted); cursor: pointer; font-size: 16px; line-height: 1; width: 22px; height: 22px; border-radius: 4px; }
   .link-list .x:hover { color: var(--danger); background: var(--danger-bg); }
   .form-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
@@ -875,6 +889,56 @@ function addLinks(text) {
   return added;
 }
 
+// Duration control: hours / minutes / seconds as three small number fields in one box.
+// Value is a number of seconds, or null when empty (= "not set"). Type digits, or use Up/Down and the
+// mouse wheel on a field (Shift = x10); going past 59 carries into the next field.
+function durationInput(initial, label, onChange) {
+  const el = document.createElement("span");
+  el.className = "dur"; el.setAttribute("role", "group"); el.setAttribute("aria-label", label + " time");
+  const units = [["h", 3600, "hours"], ["m", 60, "minutes"], ["s", 1, "seconds"]];
+  let total = initial ?? null;
+  const inputs = units.map(([u, mult, name]) => {
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.inputMode = "numeric"; inp.maxLength = 2; inp.placeholder = "00"; inp.autocomplete = "off";
+    inp.setAttribute("aria-label", `${label} ${name}`);
+    const unit = document.createElement("span"); unit.className = "dur-u"; unit.textContent = u;
+    el.append(inp, unit);
+    inp.oninput = () => {
+      inp.value = inp.value.replace(/\D/g, "");
+      const v = inputs.map((i) => parseInt(i.value, 10) || 0), any = inputs.some((i) => i.value !== "");
+      total = any ? v[0] * 3600 + Math.min(v[1], 59) * 60 + Math.min(v[2], 59) : null;
+      onChange(total);
+    };
+    const step = (d) => { total = Math.max(0, (total ?? 0) + d * mult); render(); onChange(total); };
+    inp.onkeydown = (e) => {
+      const d = e.key === "ArrowUp" ? 1 : e.key === "ArrowDown" ? -1 : 0;
+      if (d) { e.preventDefault(); step(d * (e.shiftKey ? 10 : 1)); }
+      else if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+    };
+    inp.onwheel = (e) => { if (document.activeElement === inp) { e.preventDefault(); step(e.deltaY < 0 ? 1 : -1); } };
+    inp.onfocus = () => inp.select();
+    inp.onblur = () => setTimeout(() => { if (!el.contains(document.activeElement)) render(); });
+    return inp;
+  });
+  function render() {
+    const p = (n) => String(n).padStart(2, "0");
+    if (total == null) { inputs.forEach((i) => (i.value = "")); return; }
+    inputs[0].value = p(Math.floor(total / 3600)); inputs[1].value = p(Math.floor(total / 60) % 60); inputs[2].value = p(total % 60);
+  }
+  render();
+  return { el, set(v) { total = v; render(); } };
+}
+
+// Only links that stand for a whole playlist / set (a watch?v=X&list=Y link is reduced to the video X by the server).
+function looksLikePlaylist(url) {
+  try {
+    const u = new URL(url), path = u.pathname.replace(/\/$/, "");
+    if (/youtu/i.test(u.hostname)) return path === "/playlist" || (!u.searchParams.get("v") && /youtube\.com$/i.test(u.hostname) && path === "" && !!u.searchParams.get("list"));
+    if (/soundcloud\.com$/i.test(u.hostname)) { const p = path.split("/").filter(Boolean); return p.length === 3 && p[1] === "sets"; }
+  } catch {}
+  return false;
+}
+
 function linkSource(url) {
   if (/youtu\.?be/i.test(url)) return "youtube";
   if (/soundcloud\.com|snd\.sc/i.test(url)) return "soundcloud";
@@ -889,9 +953,25 @@ function renderLinks() {
     const n = document.createElement("span"); n.className = "n"; n.textContent = i + 1;
     const u = document.createElement("span"); u.className = "u"; u.textContent = l.url; u.title = l.url;
     const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = l.bad ? "invalid" : linkSource(l.url);
+    let trim = null;
+    if (!l.bad && !looksLikePlaylist(l.url)) {
+      trim = document.createElement("div"); trim.className = "trim";
+      const mark = () => {
+        ei.el.classList.toggle("bad", l.end != null && l.end <= (l.start || 0));
+        clear.hidden = l.start == null && l.end == null;
+      };
+      const si = durationInput(l.start, "Start", (v) => { l.start = v; mark(); });
+      const ei = durationInput(l.end, "End", (v) => { l.end = v; mark(); });
+      const clear = document.createElement("button"); clear.type = "button"; clear.className = "clear"; clear.textContent = "Clear";
+      clear.onclick = () => { l.start = l.end = null; si.set(null); ei.set(null); mark(); };
+      mark();
+      const tip = document.createElement("span"); tip.className = "tip"; tip.textContent = "Optional · type or use \u2191\u2193 / mouse wheel · empty = whole track";
+      trim.append("Only from", si.el, "to", ei.el, clear, tip);
+    }
     const x = document.createElement("button"); x.className = "x"; x.type = "button"; x.title = "Remove"; x.textContent = "×";
     x.onclick = () => { links.splice(i, 1); renderLinks(); $("#urls").focus(); };
     li.append(n, u, tag, x);
+    if (trim) li.append(trim);
     return li;
   }));
   const has = links.length > 0;
@@ -941,20 +1021,32 @@ async function submit() {
   err.style.display = "none";
   if (urlInput.value.trim()) { addLinks(urlInput.value); urlInput.value = ""; }
   const valid = links.filter((l) => !l.bad).map((l) => l.url);
+  const ranges = {};
+  for (const l of links) {
+    if (l.bad) continue;
+    const ps = l.start ?? null, pe = l.end ?? null;
+    if (pe != null && pe <= (ps || 0)) {
+      err.textContent = "Check the start and end times (marked in red): the end must be after the start.";
+      err.style.display = "block";
+      renderLinks();
+      return;
+    }
+    if (ps != null || pe != null) ranges[l.url] = { start: ps, end: pe };
+  }
   if (!valid.length) {
     if (links.length) { err.textContent = "Remove the invalid entries (marked in red) first."; err.style.display = "block"; }
     return;
   }
   $("#submit").disabled = true;
   try {
-    const res = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: valid, format: $("#format").value }) });
+    const res = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: valid, format: $("#format").value, ranges }) });
     const results = await res.json();
     results.filter((r) => r.count > 1 || r.skipped).forEach((r) => toast(
       `Playlist split into ${r.count} tracks, queued one by one.` + (r.skipped ? ` ${r.skipped} already in the queue were skipped.` : ""), "ok"));
     const failed = results.filter((r) => r.error);
     const failedSet = new Set(failed.map((r) => r.input));
     // Keep failed + invalid ones in the list, drop the ones queued OK
-    const keep = links.filter((l) => l.bad || failedSet.has(l.url)).map((l) => ({ url: l.url, bad: l.bad || failedSet.has(l.url) }));
+    const keep = links.filter((l) => l.bad || failedSet.has(l.url)).map((l) => ({ url: l.url, start: l.start ?? null, end: l.end ?? null, bad: l.bad || failedSet.has(l.url) }));
     links.length = 0; links.push(...keep);
     renderLinks();
     if (failed.length) {

@@ -47,7 +47,8 @@ def list_playlist(url: str, source: str):
     return tracks
 
 
-def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None):
+def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None):
+    cropped = start is not None or end is not None
     opts = {
         "format": "bestaudio/best",
         "postprocessors": [{
@@ -57,7 +58,8 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
         }],
         "outtmpl": os.path.join(
             workdir,
-            "%(playlist_index)s - %(title)s.%(ext)s" if playlist else "%(title)s.%(ext)s",
+            "%(playlist_index)s - %(title)s.%(ext)s" if playlist
+            else "%(title)s_cropped.%(ext)s" if cropped else "%(title)s.%(ext)s",
         ),
         "noplaylist": not playlist,
         "ignoreerrors": playlist,  # skip unavailable entries inside playlists
@@ -67,6 +69,9 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
         "no_warnings": True,
         "sleep_interval_requests": 1,  # be gentle with the platform's API
     }
+    if cropped:  # only the wanted part is fetched and converted (ffmpeg cuts it; keyframes forced for exact cuts)
+        opts["download_ranges"] = yt_dlp.utils.download_range_func(None, [(start or 0, end if end is not None else float("inf"))])
+        opts["force_keyframes_at_cuts"] = True
     if playlist:
         opts["sleep_interval"] = 5       # random pause between tracks of a playlist
         opts["max_sleep_interval"] = 10
@@ -90,12 +95,13 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
 
 
 def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None,
-                audio_format: str = None):
+                audio_format: str = None, start=None, end=None):
     """Download `url` as `audio_format` (one of FORMATS) into the configured download dir and return the list of file paths.
 
     Raises on failure. `on_progress(stage, percent, title)` is called while running
     (stage is "downloading" or "converting"; percent may be None).
     `on_wait(seconds_left)` is called while the rate limiter (throttle.py) makes it wait.
+    `start` / `end` (seconds, either optional) download only that part of the track.
     Works for YouTube, SoundCloud and anything else yt-dlp can handle.
     """
     audio_format = audio_format or default_format()
@@ -111,7 +117,7 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
 
     # Download into a private temp dir so concurrent requests don't mix files.
     with tempfile.TemporaryDirectory(dir=downloads_dir, prefix=".tmp-") as workdir:
-        with yt_dlp.YoutubeDL(_build_opts(workdir, playlist, audio_format, on_progress)) as ydl:
+        with yt_dlp.YoutubeDL(_build_opts(workdir, playlist, audio_format, on_progress, start, end)) as ydl:
             info = ydl.extract_info(url, download=True)
 
         # Fill title/artist/album/year/genre/comment and cover art from what the platform gave us.
