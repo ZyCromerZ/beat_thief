@@ -236,6 +236,27 @@
   }
   .dropzone:hover, .dropzone:focus-visible, .dropzone.drag { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); outline: none; }
 
+  /* Crop tab */
+  .crop-wave { position: relative; height: 140px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; touch-action: none; user-select: none; cursor: crosshair; }
+  .crop-wave.detail { height: 90px; cursor: pointer; margin-top: 8px; }
+  .crop-wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .crop-handle { position: absolute; top: 0; bottom: 0; width: 18px; margin-left: -9px; cursor: ew-resize; z-index: 2; --hc: #ffc800; }
+  .crop-handle::after { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 4px; background: var(--hc); box-shadow: 0 0 0 1px rgba(0,0,0,.75); }
+  .crop-handle::before { content: ""; position: absolute; left: 2px; top: calc(50% - 16px); width: 14px; height: 32px; border-radius: 4px; background: var(--hc); box-shadow: 0 0 0 1.5px rgba(0,0,0,.75), 0 1px 4px rgba(0,0,0,.5); z-index: 1; }
+  .crop-handle:hover, .crop-handle:focus-visible { --hc: #fff; outline: none; }
+  .crop-play { width: 36px; padding: 0; justify-content: center; }
+  .crop-play svg { width: 16px; height: 16px; fill: currentColor; }
+  .crop-name { display: flex; align-items: center; gap: 4px; }
+  .crop-name { flex: 1 1 320px; }
+  .crop-name .text-input { flex: 1; min-width: 200px; }
+  .crop-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+  .crop-controls label { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
+  .crop-controls .time { width: 96px; font-variant-numeric: tabular-nums; }
+  .crop-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .crop-pan { display: inline-flex; gap: 4px; }
+  .crop-info .hint { margin-left: auto; }
+  .crop-info { color: var(--fg-muted); font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+
   /* Library toolbar + table */
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 400; }
   .toolbar .title { font-weight: 600; }
@@ -460,6 +481,7 @@
     <button class="tab active" role="tab" data-tab="download">Download</button>
     <button class="tab" role="tab" data-tab="library">Library</button>
     <button class="tab" role="tab" data-tab="convert">Convert</button>
+    <button class="tab" role="tab" data-tab="crop">Crop</button>
     <button class="tab" role="tab" data-tab="settings">Settings</button>
   </nav>
 </div>
@@ -564,6 +586,45 @@
       <button class="btn sm" id="convert-clear" hidden>Dismiss all</button>
     </div>
     <div id="convert-list"></div>
+  </section>
+</main>
+
+<!-- ================= Crop ================= -->
+<main id="page-crop" hidden>
+  <p class="intro">Load a song, drag the handles (or type the times) to choose the part to keep, listen to it, and save it as a new file in the download folder.</p>
+
+  <section class="box">
+    <div class="box-body">
+      <div class="dropzone" id="crop-drop" tabindex="0" role="button">Drop an audio file here, or click to choose</div>
+      <div id="crop-loading" hidden style="margin-top:12px"><div class="hint" id="crop-loading-text"></div><div class="progress indeterminate"><div></div></div></div>
+      <input type="file" id="crop-input" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.ogg,.opus,.m4a,.aac,.wma,.mp4" hidden>
+    </div>
+  </section>
+
+  <section class="box" id="crop-editor" hidden>
+    <div class="box-header"><span id="crop-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span></div>
+    <div class="box-body">
+      <div class="crop-wave" id="crop-wave">
+        <canvas id="crop-canvas"></canvas>
+        <div class="crop-handle" id="crop-h-start" role="slider" tabindex="0" aria-label="Start"></div>
+        <div class="crop-handle" id="crop-h-end" role="slider" tabindex="0" aria-label="End"></div>
+      </div>
+      <div class="crop-wave detail"><canvas id="crop-detail"></canvas></div>
+      <div class="crop-info"><span id="crop-info"></span> <span class="crop-pan" id="crop-pan" hidden><button class="btn sm" id="crop-pan-left" aria-label="Scroll left" title="Scroll left (hold to keep going)">&#9664;</button><button class="btn sm" id="crop-pan-right" aria-label="Scroll right" title="Scroll right (hold to keep going)">&#9654;</button><button class="btn sm" id="crop-zoom-reset">Reset zoom</button></span> <span class="hint">Mouse wheel on the top waveform zooms · Shift + wheel scrolls</span></div>
+      <div class="crop-controls">
+        <button class="btn crop-play" id="crop-play" aria-label="Play / pause selection" title="Play / pause the selection (click the lower waveform to jump to any point)"></button>
+        <label><input type="checkbox" id="crop-loop"> Loop</label>
+        <label>Start <input class="text-input time" id="crop-start" type="text" spellcheck="false"></label>
+        <label>End <input class="text-input time" id="crop-end" type="text" spellcheck="false"></label>
+      </div>
+      <div class="crop-controls">
+        <label class="crop-name">Save as <input class="text-input" id="crop-filename" type="text" spellcheck="false"><span id="crop-ext"></span></label>
+        <select class="text-input" id="crop-format" aria-label="Output format"></select>
+        <button class="btn" id="crop-save">Crop &amp; save</button>
+      </div>
+      <div class="err-text" id="crop-error" hidden></div>
+      <div class="row-meta" id="crop-result" hidden style="margin-top:8px"></div>
+    </div>
   </section>
 </main>
 
@@ -766,11 +827,12 @@ $("#theme-select").onchange = (e) => {
 
 /* ---------------------------------------------------------------- Tabs */
 function showTab(name, updateHash = true) {
-  if (!["library", "convert", "settings"].includes(name)) name = "download";
+  if (!["library", "convert", "crop", "settings"].includes(name)) name = "download";
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   $("#page-download").hidden = name !== "download";
   $("#page-library").hidden = name !== "library";
   $("#page-convert").hidden = name !== "convert";
+  $("#page-crop").hidden = name !== "crop";
   $("#page-settings").hidden = name !== "settings";
   if (updateHash) history.replaceState(null, "", "#" + name);
   if (name === "library") loadFiles();
@@ -2178,6 +2240,291 @@ $("#convert-list").addEventListener("click", (e) => {
   const b = e.target.closest("[data-convert-dismiss]");
   if (b) { conversions.splice(+b.dataset.convertDismiss, 1); renderConversions(); }
 });
+
+/* ---------------------------------------------------------------- Crop page */
+const crop = { file: null, buf: null, bands: null, vs: 0, ve: 0, start: 0, end: 0, src: null, ctx: null, t0: 0, raf: 0 };
+const cropWave = $("#crop-wave"), cropCanvas = $("#crop-canvas"), cropDetail = $("#crop-detail");
+
+fetch("/api/convert/formats").then((r) => r.json()).then((f) => {
+  $("#crop-format").innerHTML = Object.entries(f).map(([k, label]) => `<option value="${k}">${esc(label)}</option>`).join("");
+  try { const last = localStorage.getItem("crop-format"); if (last in f) $("#crop-format").value = last; } catch {}
+  cropExt();
+}).catch(() => {});
+$("#crop-format").onchange = (e) => { cropExt(); try { localStorage.setItem("crop-format", e.target.value); } catch {} };
+const cropExt = () => { $("#crop-ext").textContent = "." + $("#crop-format").value; };
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), r = s - m * 60;
+  return `${m}:${r.toFixed(3).padStart(6, "0")}`;
+}
+function parseTime(str) {
+  const parts = String(str).trim().replace(",", ".").split(":").map(Number);
+  if (!parts.length || parts.length > 3 || parts.some((n) => !isFinite(n) || n < 0)) return null;
+  return parts.reduce((a, n) => a * 60 + n, 0);
+}
+
+// Same three-band look as the player's waveform (red = bass, green = mids, blue = highs).
+// The song is split with two filters (250 Hz / 3 kHz, like the equalizer) and reduced to a fine
+// envelope per band once; drawing any range of it afterwards is cheap.
+const CROP_BIN = 128;
+function biquadLP(freq, sr) {
+  const w = 2 * Math.PI * freq / sr, al = Math.sin(w) / (2 * 0.7071), c = Math.cos(w), a0 = 1 + al;
+  return { b0: (1 - c) / 2 / a0, b1: (1 - c) / a0, b2: (1 - c) / 2 / a0, a1: -2 * c / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+}
+function biquadRun(f, x) {
+  const y = f.b0 * x + f.b1 * f.x1 + f.b2 * f.x2 - f.a1 * f.y1 - f.a2 * f.y2;
+  f.x2 = f.x1; f.x1 = x; f.y2 = f.y1; f.y1 = y;
+  return y;
+}
+function cropAnalyse(buf) {
+  const n = buf.length, nb = Math.ceil(n / CROP_BIN), nch = buf.numberOfChannels;
+  const ch = [...Array(nch)].map((_, i) => buf.getChannelData(i));
+  const lo = biquadLP(250, buf.sampleRate), hi = biquadLP(3000, buf.sampleRate);
+  const env = [new Float32Array(nb), new Float32Array(nb), new Float32Array(nb)];
+  for (let i = 0; i < n; i++) {
+    let x = 0;
+    for (let c = 0; c < nch; c++) x += ch[c][i];
+    x /= nch;
+    const l = biquadRun(lo, x), m = biquadRun(hi, x), k = (i / CROP_BIN) | 0;
+    const a = Math.abs(l), b = Math.abs(m - l), d = Math.abs(x - m);
+    if (a > env[0][k]) env[0][k] = a;
+    if (b > env[1][k]) env[1][k] = b;
+    if (d > env[2][k]) env[2][k] = d;
+  }
+  const refs = env.map((e) => { const t = Float32Array.from(e).sort(); return t[Math.floor(t.length * 0.98)] || 1e-6; });
+  return { env, refs };
+}
+function drawBands(canvas, from, to) {                  // from/to: bin range of crop.bands to draw
+  const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = Math.max(1, Math.round(w * dpr)); canvas.height = Math.max(1, Math.round(h * dpr));
+  const g = canvas.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const { env, refs } = crop.bands, mid = h / 2, cols = Math.floor(w * dpr), colW = 1 / dpr;
+  for (let c = 0; c < cols; c++) {
+    const a = Math.floor(from + (c / cols) * (to - from)), b = Math.max(a + 1, Math.floor(from + ((c + 1) / cols) * (to - from)));
+    const heights = env.map((e, k) => {
+      let m = 0;
+      for (let i = a; i < b && i < e.length; i++) if (e[i] > m) m = e[i];
+      return Math.min(1, m / refs[k]) ** 1.3 * (mid - 1);
+    });
+    [0, 1, 2].sort((p, q) => heights[q] - heights[p]).forEach((k) => {
+      g.fillStyle = WAVE_COLORS[k];
+      g.fillRect(c * colW, mid - heights[k], colW, heights[k] * 2);
+    });
+  }
+}
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function cropRedraw() {
+  if (!crop.buf) return;
+  const dur = crop.buf.duration, w = cropWave.clientWidth;
+  if (!w) return;
+  const bins = crop.bands.env[0].length, perSec = bins / dur;
+  if (!(crop.ve > crop.vs)) { crop.vs = 0; crop.ve = dur; }
+  const span = crop.ve - crop.vs;
+  drawBands(cropCanvas, crop.vs * perSec, crop.ve * perSec);
+  // dim what will be cut off
+  const g = cropCanvas.getContext("2d"), h = cropCanvas.clientHeight;
+  const x1 = ((crop.start - crop.vs) / span) * w, x2 = ((crop.end - crop.vs) / span) * w;
+  const c1 = Math.min(Math.max(x1, 0), w), c2 = Math.min(Math.max(x2, 0), w);
+  g.fillStyle = cssVar("--bg-subtle"); g.globalAlpha = 0.7;
+  g.fillRect(0, 0, c1, h); g.fillRect(c2, 0, w - c2, h); g.globalAlpha = 1;
+  $("#crop-h-start").style.left = x1 + "px";
+  $("#crop-h-end").style.left = x2 + "px";
+  $("#crop-pan").hidden = span >= dur - 1e-6;
+  $("#crop-pan-left").disabled = crop.vs <= 0;
+  $("#crop-pan-right").disabled = crop.ve >= dur - 1e-6;
+  drawBands(cropDetail, crop.start * perSec, crop.end * perSec);   // detail: just the kept part, full width
+  $("#crop-info").textContent = `Selection ${fmtTime(crop.start)} – ${fmtTime(crop.end)} · length ${fmtTime(crop.end - crop.start)} of ${fmtTime(dur)}` + (span < dur - 1e-6 ? ` · zoom ${(dur / span).toFixed(1)}×` : "");
+  if (document.activeElement !== $("#crop-start")) $("#crop-start").value = fmtTime(crop.start);
+  if (document.activeElement !== $("#crop-end")) $("#crop-end").value = fmtTime(crop.end);
+}
+
+function cropSet(start, end, edited) {
+  const dur = crop.buf.duration, min = 0.05;
+  start = Math.min(Math.max(0, start), dur - min);
+  end = Math.min(Math.max(end, start + min), dur);
+  const changed = start !== crop.start || end !== crop.end;
+  crop.start = start; crop.end = end;
+  cropRedraw();
+  if (changed && crop.src) cropPlay();                  // keep what you hear in step with the handles
+}
+
+function cropStop() {
+  cancelAnimationFrame(crop.raf);
+  if (crop.src) { crop.src.onended = null; try { crop.src.stop(); } catch {} crop.src.disconnect(); crop.src = null; }
+  $("#crop-play").innerHTML = ICON_PLAY;
+  cropRedraw();
+}
+function cropPlay(from = crop.start) {
+  if (!crop.buf) return;
+  const hadSrc = !!crop.src;
+  if (crop.src) { crop.src.onended = null; try { crop.src.stop(); } catch {} crop.src.disconnect(); }
+  crop.ctx ??= new AudioContext();
+  crop.ctx.resume();
+  const src = crop.ctx.createBufferSource();
+  src.buffer = crop.buf; src.connect(crop.ctx.destination);
+  src.loop = $("#crop-loop").checked; src.loopStart = crop.start; src.loopEnd = crop.end;
+  src.start(0, from, src.loop ? undefined : crop.end - from);
+  src.onended = () => { if (crop.src === src) cropStop(); };
+  crop.src = src; crop.t0 = crop.ctx.currentTime; crop.from = from;
+  $("#crop-play").innerHTML = ICON_PAUSE;
+  cancelAnimationFrame(crop.raf);
+  const tick = () => {
+    if (crop.src !== src) return;
+    const len = crop.end - crop.start;
+    let t = crop.ctx.currentTime - crop.t0;
+    t = src.loop ? crop.start + ((crop.from - crop.start + t) % len) : crop.from + t;
+    cropRedraw();
+    const w = cropWave.clientWidth, x = ((t - crop.vs) / (crop.ve - crop.vs)) * w, g = cropCanvas.getContext("2d");
+    g.fillStyle = "#000"; g.fillRect(x - 1, 0, 3.5, cropCanvas.clientHeight); g.fillStyle = "#fff"; g.fillRect(x, 0, 1.5, cropCanvas.clientHeight);
+    const dw = cropDetail.clientWidth, dx = ((t - crop.start) / len) * dw, gd = cropDetail.getContext("2d");
+    gd.fillStyle = "#000"; gd.fillRect(dx - 1, 0, 3.5, cropDetail.clientHeight); gd.fillStyle = "#fff"; gd.fillRect(dx, 0, 1.5, cropDetail.clientHeight);
+    crop.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+$("#crop-play").onclick = () => (crop.src ? cropStop() : cropPlay());
+// Click or drag on the lower waveform (the kept part) to move the playing position.
+cropDetail.parentElement.addEventListener("pointerdown", (e) => {
+  if (!crop.buf) return;
+  e.preventDefault();
+  const rect = cropDetail.getBoundingClientRect();
+  const seek = (ev) => {
+    const f = Math.min(Math.max(0, (ev.clientX - rect.left) / rect.width), 0.999);
+    cropPlay(crop.start + f * (crop.end - crop.start));
+  };
+  seek(e);
+  const up = () => { removeEventListener("pointermove", seek); removeEventListener("pointerup", up); };
+  addEventListener("pointermove", seek); addEventListener("pointerup", up);
+});
+$("#crop-loop").onchange = () => { if (crop.src) cropPlay(); };
+
+// Mouse wheel zooms around the pointer; Shift + wheel (or a horizontal wheel) scrolls.
+function cropView(vs, ve) {
+  const dur = crop.buf.duration, span = Math.min(dur, Math.max(0.5, ve - vs));
+  crop.vs = Math.min(Math.max(0, vs), dur - span); crop.ve = crop.vs + span;
+  cropRedraw();
+}
+cropWave.addEventListener("wheel", (e) => {
+  if (!crop.buf) return;
+  e.preventDefault();
+  const span = crop.ve - crop.vs, rect = cropWave.getBoundingClientRect();
+  const f = (e.clientX - rect.left) / rect.width, d = e.deltaX || e.deltaY;
+  if (e.shiftKey || (e.deltaX && Math.abs(e.deltaX) > Math.abs(e.deltaY))) {
+    const shift = (d / 500) * span;
+    cropView(crop.vs + shift, crop.ve + shift);
+  } else {
+    const t = crop.vs + f * span, ns = span * Math.exp(d / 400);   // wheel up = zoom in
+    cropView(t - f * ns, t - f * ns + ns);
+  }
+}, { passive: false });
+for (const [id, dir] of [["#crop-pan-left", -1], ["#crop-pan-right", 1]]) {   // hold to keep scrolling
+  $(id).onpointerdown = (e) => {
+    const step = () => { const sh = dir * (crop.ve - crop.vs) * 0.1; cropView(crop.vs + sh, crop.ve + sh); };
+    step();
+    const timer = setInterval(step, 80);
+    const stop = () => { clearInterval(timer); removeEventListener("pointerup", stop); removeEventListener("pointercancel", stop); };
+    addEventListener("pointerup", stop); addEventListener("pointercancel", stop);
+  };
+}
+$("#crop-zoom-reset").onclick = () => cropView(0, crop.buf.duration);
+
+// Handles: drag them, or click/drag on the waveform to start a new selection.
+function cropDrag(which, e) {
+  e.preventDefault();
+  const rect = cropWave.getBoundingClientRect(), dur = crop.buf.duration;
+  const vs = crop.vs, span = crop.ve - crop.vs;
+  const at = (ev) => Math.min(Math.max(0, vs + ((ev.clientX - rect.left) / rect.width) * span), dur);
+  const anchor = which === "new" ? at(e) : null;
+  const move = (ev) => {
+    const t = at(ev);
+    if (which === "start") cropSet(t, crop.end);
+    else if (which === "end") cropSet(crop.start, t);
+    else cropSet(Math.min(anchor, t), Math.max(anchor, t));
+  };
+  const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); };
+  addEventListener("pointermove", move); addEventListener("pointerup", up);
+}
+$("#crop-h-start").onpointerdown = (e) => cropDrag("start", e);
+$("#crop-h-end").onpointerdown = (e) => cropDrag("end", e);
+cropWave.addEventListener("pointerdown", (e) => { if (crop.buf && !e.target.closest(".crop-handle")) cropDrag("new", e); });
+for (const [id, which] of [["#crop-h-start", "start"], ["#crop-h-end", "end"]]) {
+  $(id).onkeydown = (e) => {
+    const d = (e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0) * (e.shiftKey ? 1 : 0.1);
+    if (!d) return;
+    e.preventDefault();
+    which === "start" ? cropSet(crop.start + d, crop.end) : cropSet(crop.start, crop.end + d);
+  };
+}
+for (const [id, which] of [["#crop-start", "start"], ["#crop-end", "end"]]) {
+  $(id).onchange = (e) => {
+    const t = parseTime(e.target.value);
+    if (t != null) which === "start" ? cropSet(t, crop.end) : cropSet(crop.start, t);
+    e.target.value = fmtTime(which === "start" ? crop.start : crop.end);
+  };
+}
+
+async function loadCropFile(file) {
+  cropStop();
+  const err = $("#crop-error"), box = $("#crop-loading"), say = (t) => new Promise((done) => {
+    $("#crop-loading-text").textContent = t;
+    setTimeout(done, 30);                              // let the browser paint the message before the heavy work
+  });
+  err.hidden = true; $("#crop-result").hidden = true; $("#crop-editor").hidden = true;
+  box.hidden = false;
+  crop.buf = null;
+  try {
+    await say(`Reading ${file.name}…`);
+    const data = await file.arrayBuffer();
+    await say("Decoding audio…");
+    crop.ctx ??= new AudioContext();
+    crop.buf = await crop.ctx.decodeAudioData(data);
+    await say("Analysing waveform…");
+    crop.bands = cropAnalyse(crop.buf);
+  } catch {
+    crop.buf = null; box.hidden = true;
+    alert("This browser couldn't read that audio file.");
+    return;
+  }
+  box.hidden = true;
+  Object.assign(crop, { vs: 0, ve: 0, file, start: 0, end: crop.buf.duration });
+  $("#crop-name").textContent = file.name;
+  const dot = file.name.lastIndexOf("."), ext = file.name.slice(dot + 1).toLowerCase().replace(/^aif$/, "aiff");
+  $("#crop-filename").value = (dot > 0 ? file.name.slice(0, dot) : file.name) + "_cropped";
+  if ([...$("#crop-format").options].some((o) => o.value === ext)) $("#crop-format").value = ext;   // same format as the original
+  cropExt();
+  $("#crop-editor").hidden = false;
+  cropRedraw();
+}
+const cdrop = $("#crop-drop"), cpick = $("#crop-input");
+cdrop.onclick = () => cpick.click();
+cdrop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cpick.click(); } };
+cpick.onchange = () => { if (cpick.files[0]) loadCropFile(cpick.files[0]); cpick.value = ""; };
+["dragenter", "dragover"].forEach((ev) => cdrop.addEventListener(ev, (e) => { e.preventDefault(); cdrop.classList.add("drag"); }));
+["dragleave", "drop"].forEach((ev) => cdrop.addEventListener(ev, () => cdrop.classList.remove("drag")));
+cdrop.addEventListener("drop", (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) loadCropFile(e.dataTransfer.files[0]); });
+new ResizeObserver(cropRedraw).observe(cropWave);
+
+$("#crop-save").onclick = async () => {
+  const btn = $("#crop-save"), err = $("#crop-error"), res = $("#crop-result");
+  btn.disabled = true; btn.textContent = "Saving…"; err.hidden = true; res.hidden = true;
+  try {
+    const body = new FormData();
+    body.append("file", crop.file);
+    body.append("start", crop.start); body.append("end", crop.end);
+    body.append("format", $("#crop-format").value);
+    body.append("name", $("#crop-filename").value.trim());
+    const r = await fetch("/api/crop", { method: "POST", body });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "Crop failed.");
+    res.innerHTML = `Saved <b>${esc(data.name)}</b> (${fmtSize(data.size)}) · <a href="/files/${urlPath(data.path)}">Download</a>`;
+    res.hidden = false;
+  } catch (e) {
+    err.textContent = e.message; err.hidden = false;
+  }
+  btn.disabled = false; btn.textContent = "Crop & save";
+};
 
 /* ---------------------------------------------------------------- Init */
 loadSettings();

@@ -70,3 +70,37 @@ def convert(upload, filename: str, audio_format: str) -> Path:
         final = _free_path(out_dir, _clean_stem(filename), audio_format)
         dest.replace(final)
     return final
+
+
+def crop(upload, filename: str, start: float, end: float, audio_format: str, name: str = "") -> Path:
+    """Cut [start, end] (seconds) out of the uploaded file and save it as `name` (default <original>_cropped) in the download folder.
+
+    Raises RuntimeError on failure."""
+    if audio_format not in FORMATS:
+        raise ValueError("Unsupported format.")
+    if not (0 <= start < end):
+        raise ValueError("The end must be after the start.")
+    out_dir = get_download_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(dir=out_dir, prefix=".tmp-") as work:
+        src = Path(work) / "input"
+        upload.save(src)
+        dest = Path(work) / f"output.{audio_format}"
+        times = ["-ss", f"{start:.3f}", "-to", f"{end:.3f}"]  # after -i: slow but sample-accurate
+        result = None
+        for cover in ([True, False] if audio_format in COVER_FORMATS else [False]):
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(src), *times, "-map", "0:a:0", "-map_metadata", "0"]
+            if cover:
+                cmd += ["-map", "0:v:0", "-c:v", "copy", "-disposition:v", "attached_pic"]
+            cmd += FORMATS[audio_format][1] + [str(dest)]
+            log.debug("Running: %s", " ".join(cmd))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if result.returncode == 0:
+                break
+        if result.returncode != 0 or not dest.exists():
+            lines = (result.stderr or "").strip().splitlines()
+            raise RuntimeError(lines[-1].rsplit(": ", 1)[-1] if lines else "ffmpeg could not crop this file.")
+        final = _free_path(out_dir, _clean_stem(name) if name.strip() else _clean_stem(filename) + "_cropped", audio_format)
+        dest.replace(final)
+    return final

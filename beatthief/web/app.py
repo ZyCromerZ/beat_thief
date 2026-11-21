@@ -333,6 +333,28 @@ def convert_file():
     return jsonify({"path": path.relative_to(_base_dir()).as_posix(), "name": path.name, "size": path.stat().st_size})
 
 
+@app.post("/api/crop")
+def crop_file():
+    """Multipart form: file + start + end (seconds) + format. Saves the cropped part in the download folder."""
+    upload = request.files.get("file")
+    audio_format = request.form.get("format", "")
+    try:
+        start, end = float(request.form.get("start", "")), float(request.form.get("end", ""))
+    except ValueError:
+        return jsonify({"error": "Invalid start or end time."}), 400
+    if not upload or audio_format not in converter.FORMATS:
+        return jsonify({"error": "Choose a file and a format."}), 400
+    try:
+        with tag_write_lock:
+            path = converter.crop(upload, upload.filename or "audio", start, end, audio_format,
+                                  request.form.get("name", ""))
+    except Exception as e:
+        log.error("Crop of %s failed: %s", upload.filename, e, exc_info=verbose())
+        return jsonify({"error": str(e) or "Crop failed."}), 422
+    log.info("Cropped %s [%.2f-%.2f] -> %s", upload.filename, start, end, path.name)
+    return jsonify({"path": path.relative_to(_base_dir()).as_posix(), "name": path.name, "size": path.stat().st_size})
+
+
 @app.get("/api/files")
 def list_files():
     return jsonify(_list_files())
