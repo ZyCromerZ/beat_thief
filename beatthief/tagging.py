@@ -353,10 +353,13 @@ def fetch_cover(info: dict, max_bytes: int = 10_000_000):
     return _jpeg_or_png(data)
 
 
-def tag_downloaded_file(path, info: dict):
+def tag_downloaded_file(path, info: dict, webpage_url: str = None):
     """Fill every tag yt-dlp knows about (plus cover art). Never raises: returns an error
     string on failure so the download itself is not lost."""
     try:
+        if webpage_url:
+            info = dict(info)
+            info["webpage_url"] = webpage_url
         write_tags(path, tags_from_info(info), cover=fetch_cover(info))
         return None
     except Exception as e:

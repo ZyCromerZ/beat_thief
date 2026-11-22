@@ -160,7 +160,7 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
             for item in entry.get("requested_downloads") or []:
                 path = item.get("filepath")
                 if path and os.path.exists(path):
-                    error = tag_downloaded_file(path, entry)
+                    error = tag_downloaded_file(path, entry, webpage_url=url)
                     if error:
                         log.warning("Could not tag %s: %s", os.path.basename(path), error)
 
