@@ -238,6 +238,7 @@ def tags_from_info(info: dict) -> dict:
     if not artist:
         artist = info.get("uploader") or info.get("channel") or ""
 
+    uploader = info.get("uploader") or info.get("channel") or ""
     genres = info.get("genres") or ([info["genre"]] if info.get("genre") else [])
     year = str(info.get("release_year") or (info.get("release_date") or "")[:4]
                or (info.get("upload_date") or "")[:4] or "")
@@ -245,7 +246,7 @@ def tags_from_info(info: dict) -> dict:
     return {
         "title": title,
         "artist": _clean_artist(artist),
-        "album": info.get("album") or "",
+        "album": info.get("album") or uploader or "",
         "year": year,
         "genre": ", ".join(genres),
         "comment": info.get("webpage_url") or info.get("original_url") or "",
