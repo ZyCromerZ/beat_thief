@@ -53,6 +53,11 @@ def _multi(value: str):
     return [p for p in parts if p]
 
 
+def _single_or_multi(field: str, value: str):
+    """Title stays a single value; artist etc. can split on ', ' into multiple values."""
+    return [value] if field == "title" else _multi(value)
+
+
 # --------------------------------------------------------------------------- reading
 def read_tags(path) -> dict:
     """Return {"tags": {field: str}, "has_cover": bool, "duration": float|None}."""
@@ -136,7 +141,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
             frame = _ID3_FRAMES[field]
             t.delall(frame)
             if value:
-                t.add(_ID3_CLASSES[frame](encoding=3, text=_multi(value)))
+                t.add(_ID3_CLASSES[frame](encoding=3, text=_single_or_multi(field, value)))
         if cover:
             t.delall("APIC")
             t.add(APIC(encoding=3, mime=_cover_mime(cover), type=3, desc="Cover", data=cover))
@@ -153,7 +158,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
         for field, value in values.items():
             key = _VORBIS_KEYS[field]
             if value:
-                audio.tags[key] = _multi(value)
+                audio.tags[key] = _single_or_multi(field, value)
             elif key in audio.tags:
                 del audio.tags[key]
         if cover:
@@ -186,7 +191,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
                 else:
                     t.pop(_MP4_KEY_ATOM, None)
             elif value:
-                t[_MP4_ATOMS[field]] = _multi(value)
+                t[_MP4_ATOMS[field]] = _single_or_multi(field, value)
             else:
                 t.pop(_MP4_ATOMS[field], None)
         if cover:
