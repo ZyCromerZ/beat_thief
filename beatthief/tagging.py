@@ -47,6 +47,12 @@ def _clean(value) -> str:
     return re.sub(r"[\x00-\x1f]", " ", str(value or "")).strip()[:MAX_LEN]
 
 
+def _multi(value: str):
+    """Split a value on ', ' so multi-artist (etc.) is stored as separate values."""
+    parts = [p.strip() for p in value.split(", ")] if value else []
+    return [p for p in parts if p]
+
+
 # --------------------------------------------------------------------------- reading
 def read_tags(path) -> dict:
     """Return {"tags": {field: str}, "has_cover": bool, "duration": float|None}."""
@@ -63,14 +69,14 @@ def read_tags(path) -> dict:
         t = audio.tags
         for field, frame in _ID3_FRAMES.items():
             if frame in t:
-                tags[field] = _clean(" / ".join(str(x) for x in t[frame].text))
+                tags[field] = _clean(", ".join(str(x) for x in t[frame].text))
         comms = t.getall("COMM")
         if comms:
             tags["comment"] = _clean(" ".join(comms[0].text))
         has_cover = bool(t.getall("APIC"))
     elif ext in VORBIS_FORMATS and audio.tags is not None:
         for field, key in _VORBIS_KEYS.items():
-            tags[field] = _clean(" / ".join(audio.tags.get(key, [])))
+            tags[field] = _clean(", ".join(audio.tags.get(key, [])))
         if ext == ".flac":
             has_cover = bool(audio.pictures)
         else:
@@ -78,7 +84,7 @@ def read_tags(path) -> dict:
     elif ext in MP4_FORMATS and audio.tags is not None:
         t = audio.tags
         for field, atom in _MP4_ATOMS.items():
-            tags[field] = _clean(" / ".join(str(x) for x in t.get(atom, [])))
+            tags[field] = _clean(", ".join(str(x) for x in t.get(atom, [])))
         if t.get("tmpo"):
             tags["bpm"] = str(t["tmpo"][0])
         if t.get(_MP4_KEY_ATOM):
@@ -130,7 +136,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
             frame = _ID3_FRAMES[field]
             t.delall(frame)
             if value:
-                t.add(_ID3_CLASSES[frame](encoding=3, text=[value]))
+                t.add(_ID3_CLASSES[frame](encoding=3, text=_multi(value)))
         if cover:
             t.delall("APIC")
             t.add(APIC(encoding=3, mime=_cover_mime(cover), type=3, desc="Cover", data=cover))
@@ -147,7 +153,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
         for field, value in values.items():
             key = _VORBIS_KEYS[field]
             if value:
-                audio.tags[key] = [value]
+                audio.tags[key] = _multi(value)
             elif key in audio.tags:
                 del audio.tags[key]
         if cover:
@@ -180,7 +186,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
                 else:
                     t.pop(_MP4_KEY_ATOM, None)
             elif value:
-                t[_MP4_ATOMS[field]] = [value]
+                t[_MP4_ATOMS[field]] = _multi(value)
             else:
                 t.pop(_MP4_ATOMS[field], None)
         if cover:
