@@ -526,6 +526,11 @@
           Download
         </button>
         <select class="text-input" id="format" aria-label="Format"></select>
+        <select class="text-input" id="download-crop-thumbnail" aria-label="Thumbnail crop">
+          <option value="default">Thumbnail crop: default</option>
+          <option value="enable">Thumbnail crop: force enable</option>
+          <option value="disable">Thumbnail crop: force disable</option>
+        </select>
         <span class="hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to submit</span>
       </div>
     </div>
@@ -1235,6 +1240,7 @@ function applySettings(s) {
   $("#default-format").value = s.default_format;
   $("#verbose-toggle").checked = !!s.verbose;
   $("#crop-thumbnail").value = s.crop_thumbnail ?? "default";
+  $("#download-crop-thumbnail").value = s.crop_thumbnail ?? "default";
 
   const l = s.rate_limit;
   rateLimit = l;
@@ -1268,6 +1274,7 @@ $("#verbose-toggle").onchange = (e) => putSettings({ verbose: e.target.checked }
 
 // Thumbnail crop: default / force enable / force disable.
 $("#crop-thumbnail").onchange = (e) => putSettings({ crop_thumbnail: e.target.value }, $("#crop-msg"), "Saved.");
+$("#download-crop-thumbnail").onchange = (e) => putSettings({ crop_thumbnail: e.target.value }, null, null);
 
 // Rate limit
 function readLimits() {
