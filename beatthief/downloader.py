@@ -8,7 +8,7 @@ import yt_dlp
 from . import throttle
 from .log import YtdlpLogger, log, verbose
 from .config import get_download_dir, get_setting
-from .sources import detect_source
+from .sources import detect_source, should_crop_thumbnail
 from .tagging import tag_downloaded_file
 
 # The most common formats. The value is the bitrate in kbps for lossy formats (None = lossless).
@@ -47,12 +47,21 @@ def list_playlist(url: str, source: str):
     return tracks
 
 
-def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None):
+def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None, crop_thumbnail=False):
     cropped = start is not None or end is not None
     if audio_format == "opus":
         set_audio_format = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/best"
     else:
         set_audio_format = "bestaudio/best"
+
+    postprocessor_args = None
+
+    if crop_thumbnail:
+        postprocessor_args = {
+            # Crops the thumbnail to a centered 1:1 square
+            "thumbnailsconvertor": ["-vf", "crop=min(iw\\,ih):min(iw\\,ih)"]
+    }
+
     opts = {
         "format": set_audio_format,
         "postprocessors": [{
@@ -65,10 +74,7 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
             "format": "jpg",
             "when": "before_dl",
         }],
-        "postprocessor_args": {
-                # Crops the thumbnail to a centered 1:1 square
-                "thumbnailsconvertor": ["-vf", "crop=min(iw\\,ih):min(iw\\,ih)"]
-        },
+        "postprocessor_args": postprocessor_args,
         "outtmpl": os.path.join(
             workdir,
             "%(playlist_index)s - %(title)s.%(ext)s" if playlist
@@ -118,6 +124,10 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
     `start` / `end` (seconds, either optional) download only that part of the track.
     Works for YouTube, SoundCloud and anything else yt-dlp can handle.
     """
+    crop = should_crop_thumbnail(url)
+    print(crop)
+    print(url)
+
     audio_format = audio_format or default_format()
     if audio_format not in FORMATS:
         raise ValueError(f"Unsupported format: {audio_format}")
@@ -131,7 +141,7 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
 
     # Download into a private temp dir so concurrent requests don't mix files.
     with tempfile.TemporaryDirectory(dir=downloads_dir, prefix=".tmp-") as workdir:
-        with yt_dlp.YoutubeDL(_build_opts(workdir, playlist, audio_format, on_progress, start, end)) as ydl:
+        with yt_dlp.YoutubeDL(_build_opts(workdir, playlist, audio_format, on_progress, start, end, crop)) as ydl:
             info = ydl.extract_info(url, download=True)
 
         # Fill title/artist/album/year/genre/comment and cover art from what the platform gave us.

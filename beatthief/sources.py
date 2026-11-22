@@ -11,6 +11,7 @@ SOUNDCLOUD_HOSTS = {
     "on.soundcloud.com",  # short share links
 }
 
+CROP_HOST = { "music.youtube.com" }
 
 def extract_url(text: str):
     """Return the first URL in the text (adding https:// if the scheme is missing)."""
@@ -72,6 +73,8 @@ def is_playlist(url: str) -> bool:
         return len(parts) == 3 and parts[1] == "sets"
     return False
 
+def should_crop_thumbnail(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() in CROP_HOST
 
 def validate_and_clean_url(user_input: str):
     """Return (ok, url_or_error_message, source, item_id).
@@ -94,7 +97,8 @@ def validate_and_clean_url(user_input: str):
             return False, "Could not extract the video ID. Check that the URL is correct.", None, None
         parsed = urlparse(url)
         if parsed.path == "/watch" or (parsed.hostname or "").endswith("youtu.be"):
-            url = f"https://www.youtube.com/watch?v={item_id}"   # drops list=, index=, start_radio=...
+            host = "music.youtube.com" if (parsed.hostname or "").lower() in CROP_HOST else "www.youtube.com"
+            url = f"https://{host}/watch?v={item_id}"   # drops list=, index=, start_radio=...
     else:
         item_id = _soundcloud_track_id(url)
         if not item_id:
