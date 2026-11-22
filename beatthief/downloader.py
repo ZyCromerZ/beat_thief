@@ -59,7 +59,16 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
             "key": "FFmpegExtractAudio",
             "preferredcodec": audio_format,
             "preferredquality": FORMATS[audio_format],
+        },{
+            # Converts/processes the thumbnail so postprocessor_args can crop it
+            "key": "FFmpegThumbnailsConvertor",
+            "format": "jpg",
+            "when": "before_dl",
         }],
+        "postprocessor_args": {
+                # Crops the thumbnail to a centered 1:1 square
+                "thumbnailsconvertor": ["-vf", "crop=min(iw\\,ih):min(iw\\,ih)"]
+        },
         "outtmpl": os.path.join(
             workdir,
             "%(playlist_index)s - %(title)s.%(ext)s" if playlist
