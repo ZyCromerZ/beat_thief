@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .config import get_download_dir
 from .log import log
+from .tagging import read_cover, write_tags
 
 # format -> (label, ffmpeg codec arguments). Lossless formats keep the source quality.
 FORMATS = {
@@ -17,8 +18,10 @@ FORMATS = {
     "ogg":  ("OGG Vorbis (~256 kbps)", ["-c:a", "libvorbis", "-q:a", "8"]),
     "opus": ("Opus 192 kbps",        ["-c:a", "libopus", "-b:a", "192k"]),
 }
-# Formats that can carry cover art as an attached picture.
+# ffmpeg can copy an attached picture into these.
 COVER_FORMATS = {"mp3", "m4a", "flac"}
+# Opus/Ogg store the cover as a Vorbis comment, written after the audio conversion.
+VORBIS_COVER = {"opus", "ogg"}
 
 
 def _clean_stem(filename: str) -> str:
@@ -58,7 +61,7 @@ def convert(upload, filename: str, audio_format: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(dir=out_dir, prefix=".tmp-") as work:
-        src = Path(work) / "input"
+        src = Path(work) / ("input" + Path(filename).suffix.lower())
         upload.save(src)
         dest = Path(work) / f"output.{audio_format}"
         result = _run(src, dest, audio_format, audio_format in COVER_FORMATS)
@@ -67,6 +70,16 @@ def convert(upload, filename: str, audio_format: str) -> Path:
         if result.returncode != 0 or not dest.exists():
             lines = (result.stderr or "").strip().splitlines()
             raise RuntimeError(lines[-1].rsplit(": ", 1)[-1] if lines else "ffmpeg could not convert this file.")
+        if audio_format in VORBIS_COVER:
+            try:
+                embedded = read_cover(src)
+            except Exception:
+                embedded = None
+            if embedded:
+                try:
+                    write_tags(dest, {}, cover=embedded[1])
+                except Exception as e:
+                    log.warning("Could not embed cover in %s: %s", dest.name, e)
         final = _free_path(out_dir, _clean_stem(filename), audio_format)
         dest.replace(final)
     return final

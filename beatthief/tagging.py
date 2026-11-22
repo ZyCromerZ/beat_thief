@@ -2,7 +2,9 @@
 
 Editable fields: title, artist, album, year, genre, bpm, key, comment.
 WAV/AIFF/MP3 use ID3 frames; FLAC/OGG/Opus use Vorbis comments; M4A uses MP4 atoms.
+Cover art is an ID3 APIC, a FLAC picture, an Opus/Ogg METADATA_BLOCK_PICTURE, or an MP4 covr atom.
 """
+import base64
 import re
 import subprocess
 import urllib.request
@@ -71,6 +73,8 @@ def read_tags(path) -> dict:
             tags[field] = _clean(" / ".join(audio.tags.get(key, [])))
         if ext == ".flac":
             has_cover = bool(audio.pictures)
+        else:
+            has_cover = bool(_vorbis_pictures(audio.tags))
     elif ext in MP4_FORMATS and audio.tags is not None:
         t = audio.tags
         for field, atom in _MP4_ATOMS.items():
@@ -95,6 +99,10 @@ def read_cover(path):
         return (pics[0].mime, pics[0].data) if pics else None
     if ext == ".flac" and audio.pictures:
         return audio.pictures[0].mime, audio.pictures[0].data
+    if ext in (".opus", ".ogg"):
+        pics = _vorbis_pictures(audio.tags)
+        if pics:
+            return pics[0].mime, pics[0].data
     if ext in MP4_FORMATS and audio.tags.get("covr"):
         cover = audio.tags["covr"][0]
         return ("image/png" if cover.imageformat == MP4Cover.FORMAT_PNG else "image/jpeg"), bytes(cover)
@@ -124,9 +132,8 @@ def write_tags(path, tags: dict, cover: bytes = None):
             if value:
                 t.add(_ID3_CLASSES[frame](encoding=3, text=[value]))
         if cover:
-            mime = "image/png" if cover[:4] == b"\x89PNG" else "image/jpeg"
             t.delall("APIC")
-            t.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=cover))
+            t.add(APIC(encoding=3, mime=_cover_mime(cover), type=3, desc="Cover", data=cover))
         if "source_url" in tags:
             t.delall("WOAS")
             if tags["source_url"]:
@@ -143,12 +150,15 @@ def write_tags(path, tags: dict, cover: bytes = None):
                 audio.tags[key] = [value]
             elif key in audio.tags:
                 del audio.tags[key]
-        if cover and ext == ".flac":
-            pic = Picture()
-            pic.type, pic.desc, pic.data = 3, "Cover", cover
-            pic.mime = "image/png" if cover[:4] == b"\x89PNG" else "image/jpeg"
-            audio.clear_pictures()
-            audio.add_picture(pic)
+        if cover:
+            pic = _make_picture(cover)
+            if ext == ".flac":
+                audio.clear_pictures()
+                audio.add_picture(pic)
+            else:
+                # Opus and Ogg keep the cover in a Vorbis comment, not a picture block.
+                audio.tags["metadata_block_picture"] = [
+                    base64.b64encode(pic.write()).decode("ascii")]
         audio.save()
 
     elif ext in MP4_FORMATS:
@@ -174,7 +184,7 @@ def write_tags(path, tags: dict, cover: bytes = None):
             else:
                 t.pop(_MP4_ATOMS[field], None)
         if cover:
-            fmt = MP4Cover.FORMAT_PNG if cover[:4] == b"\x89PNG" else MP4Cover.FORMAT_JPEG
+            fmt = MP4Cover.FORMAT_PNG if _cover_mime(cover) == "image/png" else MP4Cover.FORMAT_JPEG
             t["covr"] = [MP4Cover(cover, imageformat=fmt)]
         audio.save()
 
@@ -237,6 +247,52 @@ def tags_from_info(info: dict) -> dict:
     }
 
 
+def _cover_mime(cover: bytes) -> str:
+    return "image/png" if cover[:4] == b"\x89PNG" else "image/jpeg"
+
+
+def _make_picture(cover: bytes) -> Picture:
+    pic = Picture()
+    pic.type, pic.desc, pic.data = 3, "Cover", cover
+    pic.mime = _cover_mime(cover)
+    return pic
+
+
+def _vorbis_pictures(tags):
+    """Decode METADATA_BLOCK_PICTURE comments used by Opus and Ogg."""
+    pics = []
+    for raw in tags.get("metadata_block_picture") or []:
+        try:
+            pics.append(Picture(base64.b64decode(raw)))
+        except Exception:
+            continue
+    return pics
+
+
+def _jpeg_or_png(data: bytes):
+    """Return JPEG/PNG bytes, converting WebP and other images with ffmpeg."""
+    if not data:
+        return None
+    if data[:3] == b"\xff\xd8\xff" or data[:4] == b"\x89PNG":
+        return data
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+            input=data, capture_output=True, timeout=30, check=True)
+        return out.stdout or None
+    except Exception:
+        return None
+
+
+def _local_thumbnail(info: dict):
+    """Path of a thumbnail yt-dlp already wrote next to the download, if any."""
+    for thumb in reversed(info.get("thumbnails") or []):
+        path = thumb.get("filepath")
+        if path and Path(path).is_file():
+            return path
+    return None
+
+
 def _best_thumbnail_url(info: dict):
     thumbs = [t for t in (info.get("thumbnails") or []) if t.get("url")]
     if not thumbs:
@@ -249,7 +305,15 @@ def _best_thumbnail_url(info: dict):
 
 
 def fetch_cover(info: dict, max_bytes: int = 10_000_000):
-    """Download the cover art and return JPEG/PNG bytes, or None."""
+    """Return JPEG/PNG cover bytes from the thumbnail saved with the download, or from its URL."""
+    local = _local_thumbnail(info)
+    if local:
+        try:
+            image = _jpeg_or_png(Path(local).read_bytes()[:max_bytes])
+            if image:
+                return image
+        except Exception:
+            pass
     url = _best_thumbnail_url(info)
     if not url:
         return None
@@ -259,16 +323,7 @@ def fetch_cover(info: dict, max_bytes: int = 10_000_000):
             data = resp.read(max_bytes)
     except Exception:
         return None
-    if data[:3] == b"\xff\xd8\xff" or data[:4] == b"\x89PNG":
-        return data
-    # WebP and others: convert to JPEG with ffmpeg.
-    try:
-        out = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
-            input=data, capture_output=True, timeout=30, check=True)
-        return out.stdout or None
-    except Exception:
-        return None
+    return _jpeg_or_png(data)
 
 
 def tag_downloaded_file(path, info: dict):

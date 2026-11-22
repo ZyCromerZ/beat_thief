@@ -65,6 +65,7 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
             "%(playlist_index)s - %(title)s.%(ext)s" if playlist
             else "%(title)s_cropped.%(ext)s" if cropped else "%(title)s.%(ext)s",
         ),
+        "writethumbnail": True,  # saved beside the audio, then embedded once the file exists
         "noplaylist": not playlist,
         "ignoreerrors": playlist,  # skip unavailable entries inside playlists
         "quiet": True,
