@@ -5,6 +5,8 @@ import tempfile
 
 import yt_dlp
 
+from urllib.parse import urlparse
+
 from . import throttle
 from .log import YtdlpLogger, log, verbose
 from .config import get_download_dir, get_setting
@@ -45,11 +47,12 @@ def list_playlist(url: str, source: str):
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     tracks = []
+    host = (urlparse(url).hostname or "www.youtube.com").lower()
     for entry in filter(None, (info or {}).get("entries") or []):
         title = entry.get("title")
         if title in ("[Private video]", "[Deleted video]"):
             continue
-        link = f"https://www.youtube.com/watch?v={entry['id']}" if source == "youtube" and entry.get("id") \
+        link = f"https://{host}/watch?v={entry['id']}" if source == "youtube" and entry.get("id") \
             else entry.get("url") or entry.get("webpage_url")
         if link:
             tracks.append({"url": link, "title": title})
