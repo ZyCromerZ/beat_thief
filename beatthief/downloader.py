@@ -21,6 +21,16 @@ def default_format() -> str:
     return fmt if fmt in FORMATS else AUDIO_FORMAT
 
 
+def _crop_thumbnail_pref(url: str) -> bool:
+    """Whether to square-crop the thumbnail: forced on/off via config, otherwise the platform default."""
+    pref = get_setting("crop_thumbnail", "default")
+    if pref == "enable":
+        return True
+    if pref == "disable":
+        return False
+    return should_crop_thumbnail(url)
+
+
 MAX_PLAYLIST = 500  # tracks taken from one playlist
 
 
@@ -124,15 +134,12 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
     `start` / `end` (seconds, either optional) download only that part of the track.
     Works for YouTube, SoundCloud and anything else yt-dlp can handle.
     """
-    crop = should_crop_thumbnail(url)
-    print(crop)
-    print(url)
-
+    crop = _crop_thumbnail_pref(url)
     audio_format = audio_format or default_format()
     if audio_format not in FORMATS:
         raise ValueError(f"Unsupported format: {audio_format}")
 
-    log.info("Downloading %s as %s", url, audio_format)
+    log.info("Downloading %s as %s (thumbnail crop: %s)", url, audio_format, crop)
     throttle.wait_turn(detect_source(url) or "other", on_wait)
     log.debug("Rate limiter released %s", url)
 

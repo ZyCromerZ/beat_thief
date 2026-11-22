@@ -303,6 +303,7 @@ def _settings_payload():
         "rate_limit": throttle.limits(),
         "rate_limit_defaults": throttle.DEFAULTS,
         "verbose": verbose(),
+        "crop_thumbnail": config.get_setting("crop_thumbnail", "default"),
     }
 
 
@@ -319,6 +320,8 @@ def update_settings():
     try:
         if "default_format" in data and data["default_format"] not in downloader.FORMATS:
             raise ValueError("Unsupported format.")
+        if "crop_thumbnail" in data and data["crop_thumbnail"] not in ("default", "enable", "disable"):
+            raise ValueError("crop_thumbnail must be 'default', 'enable' or 'disable'.")
         limits = throttle.validate_limits(data["rate_limit"]) if data.get("rate_limit") else None
         if "download_dir" in data:
             config.set_download_dir(data["download_dir"])  # may fail: do it before saving the rest
@@ -330,6 +333,8 @@ def update_settings():
         logging_setup.set_verbose(bool(data["verbose"]))
     if "default_format" in data:
         config.set_setting("default_format", data["default_format"])
+    if "crop_thumbnail" in data:
+        config.set_setting("crop_thumbnail", data["crop_thumbnail"])
     if "rate_limit" in data:  # null / empty resets to the defaults
         config.set_setting("rate_limit", limits)
     return jsonify(_settings_payload())
