@@ -12,7 +12,7 @@ from .sources import detect_source
 from .tagging import tag_downloaded_file
 
 # The most common formats. The value is the bitrate in kbps for lossy formats (None = lossless).
-FORMATS = {"wav": None, "flac": None, "mp3": "320", "m4a": "256"}
+FORMATS = {"wav": None, "flac": None, "opus": None, "mp3": "320", "m4a": "256"}
 AUDIO_FORMAT = "wav"  # built-in default; the user's choice lives in config.json ("default_format")
 
 
@@ -49,8 +49,12 @@ def list_playlist(url: str, source: str):
 
 def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None):
     cropped = start is not None or end is not None
+    if audio_format == "opus":
+        set_audio_format = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/best"
+    else:
+        set_audio_format = "bestaudio/best"
     opts = {
-        "format": "bestaudio/best",
+        "format": set_audio_format,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": audio_format,
