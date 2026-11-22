@@ -16,7 +16,8 @@ FORMATS = {
     "mp3":  ("MP3 320 kbps",         ["-c:a", "libmp3lame", "-b:a", "320k"]),
     "m4a":  ("M4A (AAC 256 kbps)",   ["-c:a", "aac", "-b:a", "256k"]),
     "ogg":  ("OGG Vorbis (~256 kbps)", ["-c:a", "libvorbis", "-q:a", "8"]),
-    "opus": ("Opus 192 kbps",        ["-c:a", "libopus", "-b:a", "192k"]),
+    # "opus": ("Opus 192 kbps",        ["-c:a", "libopus", "-b:a", "192k"]),
+    "opus": ("Opus (auto-bitrate)",  ["-c:a", "libopus"]),
 }
 # ffmpeg can copy an attached picture into these.
 COVER_FORMATS = {"mp3", "m4a", "flac"}
