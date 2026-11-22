@@ -13,14 +13,14 @@ from pathlib import Path
 import mutagen
 from mutagen.aiff import AIFF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import (APIC, COMM, TALB, TBPM, TCON, TDRC, TIT2, TKEY, TPE1, WOAS)
+from mutagen.id3 import (APIC, COMM, TALB, TBPM, TCON, TDRC, TIT2, TKEY, TPE1, TRCK, WOAS)
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
 
-FIELDS = ("title", "artist", "album", "year", "genre", "bpm", "key", "comment")
+FIELDS = ("title", "artist", "album", "track", "year", "genre", "bpm", "key", "comment")
 MAX_LEN = 1000
 
 ID3_FORMATS = {".wav": WAVE, ".aiff": AIFF, ".aif": AIFF, ".mp3": MP3}
@@ -28,14 +28,14 @@ VORBIS_FORMATS = {".flac": FLAC, ".ogg": OggVorbis, ".opus": OggOpus}
 MP4_FORMATS = {".m4a": MP4, ".mp4": MP4}
 SUPPORTED_EXTS = set(ID3_FORMATS) | set(VORBIS_FORMATS) | set(MP4_FORMATS)
 
-_ID3_FRAMES = {"title": "TIT2", "artist": "TPE1", "album": "TALB", "year": "TDRC",
-               "genre": "TCON", "bpm": "TBPM", "key": "TKEY"}
-_ID3_CLASSES = {"TIT2": TIT2, "TPE1": TPE1, "TALB": TALB, "TDRC": TDRC,
-                "TCON": TCON, "TBPM": TBPM, "TKEY": TKEY}
-_VORBIS_KEYS = {"title": "title", "artist": "artist", "album": "album", "year": "date",
-                "genre": "genre", "bpm": "bpm", "key": "initialkey", "comment": "comment"}
-_MP4_ATOMS = {"title": "\xa9nam", "artist": "\xa9ART", "album": "\xa9alb", "year": "\xa9day",
-              "genre": "\xa9gen", "comment": "\xa9cmt"}
+_ID3_FRAMES = {"title": "TIT2", "artist": "TPE1", "album": "TALB", "track": "TRCK",
+               "year": "TDRC", "genre": "TCON", "bpm": "TBPM", "key": "TKEY"}
+_ID3_CLASSES = {"TIT2": TIT2, "TPE1": TPE1, "TALB": TALB, "TRCK": TRCK,
+                "TDRC": TDRC, "TCON": TCON, "TBPM": TBPM, "TKEY": TKEY}
+_VORBIS_KEYS = {"title": "title", "artist": "artist", "album": "album", "track": "tracknumber",
+                "year": "date", "genre": "genre", "bpm": "bpm", "key": "initialkey", "comment": "comment"}
+_MP4_ATOMS = {"title": "\xa9nam", "artist": "\xa9ART", "album": "\xa9alb", "track": "trkn",
+              "year": "\xa9day", "genre": "\xa9gen", "comment": "\xa9cmt"}
 _MP4_KEY_ATOM = "----:com.apple.iTunes:initialkey"
 
 
@@ -54,8 +54,8 @@ def _multi(value: str):
 
 
 def _single_or_multi(field: str, value: str):
-    """Title stays a single value; artist etc. can split on ', ' into multiple values."""
-    return [value] if field == "title" else _multi(value)
+    """Title and track stay as single values; artist etc. can split on ', ' into multiple values."""
+    return [value] if field in ("title", "track") else _multi(value)
 
 
 # --------------------------------------------------------------------------- reading
@@ -89,7 +89,12 @@ def read_tags(path) -> dict:
     elif ext in MP4_FORMATS and audio.tags is not None:
         t = audio.tags
         for field, atom in _MP4_ATOMS.items():
-            tags[field] = _clean(", ".join(str(x) for x in t.get(atom, [])))
+            if field == "track":
+                trkn = t.get(atom)
+                if trkn:
+                    tags["track"] = str(trkn[0][0])
+            else:
+                tags[field] = _clean(", ".join(str(x) for x in t.get(atom, [])))
         if t.get("tmpo"):
             tags["bpm"] = str(t["tmpo"][0])
         if t.get(_MP4_KEY_ATOM):
@@ -190,6 +195,14 @@ def write_tags(path, tags: dict, cover: bytes = None):
                     t[_MP4_KEY_ATOM] = [MP4FreeForm(value.encode("utf-8"))]
                 else:
                     t.pop(_MP4_KEY_ATOM, None)
+            elif field == "track":
+                if value:
+                    try:
+                        t["trkn"] = [(int(value), 0)]
+                    except ValueError:
+                        t.pop("trkn", None)
+                else:
+                    t.pop("trkn", None)
             elif value:
                 t[_MP4_ATOMS[field]] = _single_or_multi(field, value)
             else:
@@ -247,11 +260,13 @@ def tags_from_info(info: dict) -> dict:
     genres = info.get("genres") or ([info["genre"]] if info.get("genre") else [])
     year = str(info.get("release_year") or (info.get("release_date") or "")[:4]
                or (info.get("upload_date") or "")[:4] or "")
+    track = str(info.get("playlist_index") or "")
 
     return {
         "title": title,
         "artist": _clean_artist(artist),
         "album": info.get("album") or uploader or "",
+        "track": track,
         "year": year,
         "genre": ", ".join(genres),
         "comment": info.get("webpage_url") or info.get("original_url") or "",

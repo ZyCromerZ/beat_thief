@@ -814,7 +814,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const STATUS = { cancelled: "Cancelled", queued: "Queued", cooldown: "Cooldown", downloading: "Downloading", converting: "Converting", done: "Done", error: "Failed" };
-const FIELDS = ["title", "artist", "album", "year", "genre", "bpm", "key", "comment"];
+const FIELDS = ["title", "artist", "album", "track", "year", "genre", "bpm", "key", "comment"];
 const ICON_DL = '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M7.25 1.75a.75.75 0 0 1 1.5 0v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 0 1 1.06-1.06l2.22 2.22V1.75ZM2.75 12a.75.75 0 0 1 .75.75v.5c0 .14.11.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.75.75 0 0 1 1.5 0v.5A1.75 1.75 0 0 1 12.25 15h-8.5A1.75 1.75 0 0 1 2 13.25v-.5a.75.75 0 0 1 .75-.75Z"/></svg>';
 const ICON_DEL = '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/></svg>';
 const ICON_PLAY = '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5-9-5.5Z"/></svg>';
@@ -1327,7 +1327,7 @@ const state = { files: [], edits: new Map(), analyzing: new Map(), analysisError
 const sortValue = (f, key) => {
   if (FIELDS.includes(key)) {
     const v = (state.edits.get(f.path) || {})[key] ?? f.tags[key];
-    return ["year", "bpm"].includes(key) ? (parseFloat(v) || 0) : String(v).toLowerCase();
+    return ["year", "bpm", "track"].includes(key) ? (parseFloat(v) || 0) : String(v).toLowerCase();
   }
   return f[key] ?? 0;
 };
@@ -1340,6 +1340,7 @@ const COLS = [
   { id: "title", flex: true, label: "Title", sort: "title", width: 184, min: 100, field: true, locked: true },
   { id: "artist", flex: true, label: "Artist", sort: "artist", width: 122, min: 60, field: true },
   { id: "album", flex: true, label: "Album", sort: "album", width: 108, min: 60, field: true },
+  { id: "track", label: "Track", sort: "track", filter: true, width: 64, min: 56, field: true, mono: true },
   { id: "year", label: "Year", sort: "year", filter: true, width: 74, min: 66, field: true, mono: true },
   { id: "genre", flex: true, label: "Genre", sort: "genre", filter: true, width: 122, min: 76, field: true },
   { id: "bpm", label: "BPM", sort: "bpm", filter: true, width: 72, min: 64, field: true, mono: true },
@@ -1556,6 +1557,7 @@ renderColumns();
 const splitValues = (s) => { const v = String(s || "").split(/\s*\/\s*/).map((x) => x.trim()).filter(Boolean); return v.length ? v : [""]; };
 const FILTER_DEFS = {
   bpm: { kind: "range", label: "BPM", value: (f) => parseFloat(f.tags.bpm), step: 1 },
+  track: { kind: "range", label: "Track", value: (f) => parseInt(f.tags.track, 10), step: 1 },
   year: { kind: "range", label: "Year", value: (f) => parseInt(f.tags.year, 10), step: 1 },
   duration: { kind: "range", label: "Time", unit: "min", scale: 60, value: (f) => f.duration, step: 0.5 },
   modified: { kind: "date", label: "Added", value: (f) => f.modified },
