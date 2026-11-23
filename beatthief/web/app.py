@@ -528,19 +528,20 @@ lyrics_lock = threading.Lock()
 
 
 def _lyrics_file(rel):
-    """Read the artist/title/duration a lyrics search needs from the audio file's tags."""
+    """Read the artist/title/duration/genre/album a lyrics search needs from the audio file's tags."""
     _, path = _safe_file(rel)
     info = tagging.read_tags(path)
     tags = info["tags"]
-    return path, tags.get("artist", ""), tags.get("title", ""), info.get("duration")
+    return (path, tags.get("artist", ""), tags.get("title", ""), info.get("duration"),
+            tags.get("genre", ""), tags.get("album", ""))
 
 
 def _run_lyrics(rel):
     with lyrics_lock:
         lyrics_jobs[rel]["status"] = "running"
     try:
-        path, artist, title, duration = _lyrics_file(rel)
-        text, reason = lyrics.fetch_lyrics(artist, title, duration)
+        path, artist, title, duration, genre, album = _lyrics_file(rel)
+        text, reason = lyrics.fetch_lyrics(artist, title, duration, genre, album)
         if text:
             sidecar = lyrics.save_lyrics(path, text)
             outcome = {"status": "done", "file": sidecar.name, "reason": reason}
