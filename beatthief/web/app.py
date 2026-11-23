@@ -13,7 +13,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .. import log as logging_setup
 from ..log import clean_error, log, verbose
-from .. import analysis, config, converter, downloader, tagging, throttle, updater, waveform
+from .. import analysis, config, converter, downloader, lyrics, tagging, throttle, updater, waveform
 from ..sources import is_playlist, validate_and_clean_url
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -129,6 +129,7 @@ def _file_entry(base, path):
     return {
         "path": path.relative_to(base).as_posix(), "name": path.name, "size": st.st_size,
         "modified": st.st_mtime, "duration": info["duration"], "has_cover": info["has_cover"],
+        "has_lyrics": lyrics.sidecar_path(path).is_file(),
         "tags": info["tags"],
     }
 
@@ -443,6 +444,16 @@ def get_cover(rel):
     return Response(data, mimetype=mime, headers={"Cache-Control": "private, max-age=3600"})
 
 
+@app.get("/api/lyrics-file/<path:rel>")
+def get_lyrics_file(rel):
+    """Download the .lrc sidecar of a track."""
+    _, path = _safe_file(rel)
+    sidecar = lyrics.sidecar_path(path)
+    if not sidecar.is_file():
+        abort(404)
+    return send_from_directory(sidecar.parent, sidecar.name, as_attachment=True, mimetype="text/plain")
+
+
 @app.put("/api/tags")
 def update_tags():
     """Body: {"files": [{"path": "...", "tags": {field: value, ...}}, ...]}"""
@@ -506,6 +517,66 @@ def get_analysis():
         for rel, state in snapshot.items():
             if state["status"] in ("done", "error"):
                 del analyses[rel]
+    return jsonify(snapshot)
+
+
+# Lyrics lookup: lyrics are saved to a separate .lrc file next to the audio (never written into
+# the music file). Mirrors the analysis flow: the UI queues paths, polls for results.
+lyrics_executor = ThreadPoolExecutor(max_workers=2)  # network-bound: a couple at a time
+lyrics_jobs = {}  # path -> {"status": queued|running|done|error, "file", "reason", "error"}
+lyrics_lock = threading.Lock()
+
+
+def _lyrics_file(rel):
+    """Read the artist/title/duration a lyrics search needs from the audio file's tags."""
+    _, path = _safe_file(rel)
+    info = tagging.read_tags(path)
+    tags = info["tags"]
+    return path, tags.get("artist", ""), tags.get("title", ""), info.get("duration")
+
+
+def _run_lyrics(rel):
+    with lyrics_lock:
+        lyrics_jobs[rel]["status"] = "running"
+    try:
+        path, artist, title, duration = _lyrics_file(rel)
+        text, reason = lyrics.fetch_lyrics(artist, title, duration)
+        if text:
+            sidecar = lyrics.save_lyrics(path, text)
+            outcome = {"status": "done", "file": sidecar.name, "reason": reason}
+            log.info("Lyrics for %s saved to %s", rel, sidecar.name)
+        else:
+            outcome = {"status": "done", "file": None, "reason": reason}
+            log.info("Lyrics for %s not found: %s", rel, reason)
+    except Exception as e:
+        reason = "File not found." if getattr(e, "code", None) == 404 else (str(e) or "Lyrics lookup failed.")
+        log.warning("Lyrics of %s failed: %s", rel, reason, exc_info=verbose())
+        outcome = {"status": "error", "error": reason}
+    with lyrics_lock:
+        lyrics_jobs[rel] = outcome
+
+
+@app.post("/api/lyrics")
+def start_lyrics():
+    """Body: {"paths": ["rel/path.wav", ...]}. Fetches lyrics for each file and saves a .lrc sidecar."""
+    data = request.get_json(silent=True) or {}
+    for rel in [str(p) for p in data.get("paths", [])][:MAX_FILES]:
+        with lyrics_lock:
+            if lyrics_jobs.get(rel, {}).get("status") in ("queued", "running"):
+                continue
+            lyrics_jobs[rel] = {"status": "queued"}
+        lyrics_executor.submit(_run_lyrics, rel)
+    return "", 202
+
+
+@app.get("/api/lyrics")
+def get_lyrics():
+    """Current state of every lyrics lookup. Finished ones are returned once and then forgotten."""
+    with lyrics_lock:
+        snapshot = {rel: dict(state) for rel, state in lyrics_jobs.items()}
+        for rel, state in snapshot.items():
+            if state["status"] in ("done", "error"):
+                del lyrics_jobs[rel]
     return jsonify(snapshot)
 
 
