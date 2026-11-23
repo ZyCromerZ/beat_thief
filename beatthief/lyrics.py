@@ -1,11 +1,13 @@
 """Fetch song lyrics and store them in a sidecar .lrc file next to the audio file.
 
 Lyrics are never written into the music file itself: they live in a separate
-"<name>.lrc" file beside it, so the audio is left untouched. The lookup uses two
-free, key-less services in order: the LRCLIB API (https://lrclib.net) first, and
-then lrc.red (https://lrc.red) as a fallback when LRCLIB has nothing. Each lookup
-first tries to match the exact track by artist + title + duration; if that fails
-it falls back to progressively looser searches.
+"<name>.lrc" file beside it, so the audio is left untouched. The lookup uses three
+sources in order: the LRCLIB API (https://lrclib.net) first, then lrc.red
+(https://lrc.red), and finally the video's own YouTube captions (read from the
+source link stored in the file's comment tag) as a last resort for non-official
+uploads the lyric databases don't have. Each database lookup first tries to match
+the exact track by artist + title + duration; if that fails it falls back to
+progressively looser searches.
 
 Nightcore (and other sped-up) uploads are common and awkward for a lyrics lookup:
 the "artist" is often the upload channel (e.g. "NightcoreClarity"), the title
@@ -22,6 +24,7 @@ import re
 import urllib.parse
 import urllib.request
 
+from . import config
 from .log import log, verbose
 
 # LRCLIB endpoints. No authentication is needed for these.
@@ -36,6 +39,23 @@ _LRCRED_TRACK_URL = f"{_LRCRED_BASE}/s"
 _MAX_BYTES = 2_000_000
 _TIMEOUT = 15
 _UA = "BeatThief/1.0 (https://github.com/Kilo-Org/beat_thief)"
+
+# Lookups are done one at a time, this many seconds apart, so a big batch doesn't hammer the
+# services into returning "Could not reach the lyrics service" (rate limiting / HTTP 429).
+DEFAULT_LYRICS_DELAY = 1.0
+
+
+def lyrics_delay() -> float:
+    """Seconds to wait between two lyric lookups (config "lyrics_delay"; 0 disables the wait)."""
+    try:
+        return max(0.0, float(config.get_setting("lyrics_delay", DEFAULT_LYRICS_DELAY)))
+    except (TypeError, ValueError):
+        return DEFAULT_LYRICS_DELAY
+
+
+def auto_lyrics_enabled() -> bool:
+    """Whether to fetch lyrics automatically after each download (config "auto_lyrics")."""
+    return bool(config.get_setting("auto_lyrics", False))
 
 
 def _http_json(url: str):
@@ -277,7 +297,165 @@ def _lrc_red_lookup(artist: str, title: str, duration: float = None):
     return None
 
 
-def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = None, album: str = None):
+# --- YouTube captions -----------------------------------------------------------------------------
+# Each downloaded file keeps its source link in the comment tag. yt-dlp can pull that video's
+# captions (manual or auto-generated), which for non-official uploads (nightcore, fan covers, label
+# rips) are the only lyrics that actually match the audio. Captions are converted to .lrc below.
+
+# A cue timestamp: 'HH:MM:SS.mmm' or 'MM:SS.mmm' (VTT and SRT both appear in the wild).
+_CUE_TS = re.compile(r"(\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}|\d{1,3}:\d{2}[.,]\d{1,3})")
+# An inline word-level timing tag in auto captions, e.g. '<00:00:19.039>'.
+_WORD_TS = re.compile(r"<\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}>")
+# Any remaining inline tag ('<c>', '<i>', ...), stripped from the displayed text.
+_ANY_TAG = re.compile(r"<[^>]*>")
+# A line that is only a music/sound marker, e.g. '[Music]', '(♪)', '***'.
+_MUSIC_ONLY = re.compile(r"^[\s\[\]\(\)\*~\-\u266a\u266b\u266c]+$|^\[?\s*(music|applause|laughter)\s*\]?$", re.I)
+
+
+def _ts_to_ms(ts: str) -> int:
+    """Convert a 'HH:MM:SS.mmm' / 'MM:SS.mmm' cue timestamp to milliseconds."""
+    ts = ts.strip().replace(",", ".")
+    parts = ts.split(":")
+    if len(parts) == 3:
+        h, m, s = parts
+    else:
+        h, m, s = "0", parts[0], parts[1]
+    sec, _, frac = s.partition(".")
+    ms = int((frac + "000")[:3]) if frac else 0
+    return ((int(h) * 60 + int(m)) * 60 + int(sec)) * 1000 + ms
+
+
+def _fmt_lrc(ms: int) -> str:
+    """Format milliseconds as an LRC '[MM:SS.xx]' timestamp."""
+    m, rem = divmod(int(ms), 60000)
+    s, rem2 = divmod(rem, 1000)
+    return f"[{m:02d}:{s:02d}.{rem2 // 10:02d}]"
+
+
+def _parse_cues(text: str):
+    """Split a VTT/SRT transcript into (start_ms, body) cues, in file order."""
+    cues = []
+    for block in re.split(r"\n\s*\n", (text or "").replace("\r\n", "\n").replace("\r", "\n")):
+        lines = block.split("\n")
+        ti = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
+        if ti is None:
+            continue
+        m = _CUE_TS.search(lines[ti].split("-->")[0])
+        if not m:
+            continue
+        cues.append((_ts_to_ms(m.group(1)), "\n".join(lines[ti + 1:])))
+    return cues
+
+
+def _clean_cue_text(body: str) -> str:
+    """Strip timing/style tags and HTML entities from a cue body, returning its display text."""
+    body = _WORD_TS.sub("", body)
+    body = _ANY_TAG.sub("", body)
+    body = (body.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&#39;", "'"))
+    return " ".join(ln.strip() for ln in body.split("\n") if ln.strip()).strip()
+
+
+def _subs_to_lrc(text: str):
+    """Convert a VTT/SRT transcript to an .lrc string (synced), or None if it has no usable lyrics.
+
+    Auto captions carry inline word timings and repeat each line across rolling cues; a short
+    "snapshot" cue (one without word timings) is emitted whenever a line finishes, so those give the
+    clean text. Manual captions have no word timings at all, so every cue is used directly.
+    """
+    cues = _parse_cues(text)
+    if not cues:
+        return None
+    is_auto = any(_WORD_TS.search(body) for _, body in cues)
+    rows = []
+    if is_auto:
+        # Prefer the clean snapshot cues; fall back to the last line of each cue if none exist.
+        for start, body in cues:
+            if _WORD_TS.search(body):
+                continue
+            line = _clean_cue_text(body)
+            if line and not _MUSIC_ONLY.match(line):
+                rows.append((start, line))
+        if not rows:
+            for start, body in cues:
+                line = _clean_cue_text(body).split("\n")[-1].strip()
+                if line and not _MUSIC_ONLY.match(line):
+                    rows.append((start, line))
+    else:
+        for start, body in cues:
+            line = _clean_cue_text(body)
+            if line and not _MUSIC_ONLY.match(line):
+                rows.append((start, line))
+
+    # Collapse the rolling duplicates of auto captions: a line that is a prefix of the next (or
+    # vice versa) is the same caption growing word by word, so keep the longest text at the
+    # earliest timestamp. Exact repeats and empty/music-only lines are dropped.
+    out = []  # list of (start_ms, line)
+    for start, line in rows:
+        if out:
+            p_start, p_line = out[-1]
+            if line == p_line:
+                continue
+            if is_auto and (line.startswith(p_line) or p_line.startswith(line)):
+                if len(line) >= len(p_line):
+                    out[-1] = (p_start, line)
+                continue
+        out.append((start, line))
+    return "\n".join(f"{_fmt_lrc(s)}{t}" for s, t in out)
+
+
+def fetch_youtube_lyrics(url: str):
+    """Fetch a video's captions via yt-dlp and convert them to .lrc. Returns the text or None.
+
+    Downloads the manual and auto captions (English first, then the original language) into a
+    temp dir, converts them with `_subs_to_lrc`, and returns the first usable result. Never raises.
+    """
+    if not url:
+        return None
+    import glob
+    import os
+    import tempfile
+
+    import yt_dlp
+
+    from .log import YtdlpLogger
+
+    with tempfile.TemporaryDirectory() as tmp:
+        opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en-orig", "en", "en-US", "en-GB", "orig"],
+            "subtitlesformat": "vtt",
+            "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+        }
+        if verbose():
+            opts.update({"verbose": True, "logger": YtdlpLogger(), "no_warnings": False})
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            log.debug("yt-dlp captions (%s) failed: %s", url, e, exc_info=verbose())
+            return None
+
+        files = sorted(glob.glob(os.path.join(tmp, "*.vtt")) + glob.glob(os.path.join(tmp, "*.srt")),
+                       key=lambda p: os.path.basename(p).lower())
+        for f in files:
+            try:
+                raw = open(f, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            lrc = _subs_to_lrc(raw)
+            if lrc:
+                return lrc
+    return None
+
+
+def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = None, album: str = None,
+                 source_url: str = None):
     """Return (text, source) where text is plain or synced lyrics and source is a short label.
 
     Returns (None, reason) when no lyrics could be found. Never raises on network errors: it
@@ -290,7 +468,9 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
     near-exact title, so it never returns a different song that merely shares a word.
 
     When the artist + title search comes up empty, the album is used as an extra clue: first
-    title + album + artist, then title + album.
+    title + album + artist, then title + album. As a final fallback, when `source_url` (the source
+    link stored in the file's comment tag) points at a video, its YouTube captions are read and
+    converted to .lrc - the last resort for non-official uploads the databases don't carry.
     """
     # A nightcore channel name (e.g. "NightcoreClarity") or a sped-up genre flags the track as a
     # nightcore even when the title itself carries no marker.
@@ -364,6 +544,13 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
     red = _lrc_red_lookup(artist, title, dur)
     if red:
         return red, "lrc.red"
+
+    # 4) Still nothing: read the video's own captions from the source link kept in the file's
+    # comment tag. For a non-official upload the databases don't have, its captions are the only
+    # lyrics that actually match the audio.
+    yt = fetch_youtube_lyrics(source_url)
+    if yt:
+        return yt, "youtube"
     return None, last_reason
 
 

@@ -97,6 +97,14 @@ def _run_job(job_id, run):
                 took=round(time.time() - started[0], 1) if started else None,
                 files=[os.path.basename(p) for p in paths],
                 title=os.path.splitext(os.path.basename(paths[0]))[0])
+        if lyrics.auto_lyrics_enabled():  # fetch lyrics for the fresh files in the background
+            try:
+                base = _base_dir()
+                rels = [os.path.relpath(p, base) for p in paths]
+            except ValueError:
+                rels = []
+            _enqueue_lyrics(rels)
+            log.info("Auto lyrics queued for %d downloaded file(s)", len(rels))
     except Exception as e:
         message = clean_error(e, "Download failed.")
         if isinstance(e, yt_dlp.utils.DownloadCancelled):
@@ -305,6 +313,8 @@ def _settings_payload():
         "rate_limit_defaults": throttle.DEFAULTS,
         "verbose": verbose(),
         "crop_thumbnail": config.get_setting("crop_thumbnail", "default"),
+        "auto_lyrics": lyrics.auto_lyrics_enabled(),
+        "lyrics_delay": lyrics.lyrics_delay(),
     }
 
 
@@ -323,6 +333,13 @@ def update_settings():
             raise ValueError("Unsupported format.")
         if "crop_thumbnail" in data and data["crop_thumbnail"] not in ("default", "enable", "disable"):
             raise ValueError("crop_thumbnail must be 'default', 'enable' or 'disable'.")
+        if "lyrics_delay" in data:
+            try:
+                delay = float(data["lyrics_delay"])
+            except (TypeError, ValueError):
+                raise ValueError("lyrics_delay must be a number.") from None
+            if not 0 <= delay <= 3600:
+                raise ValueError("lyrics_delay must be between 0 and 3600 seconds.")
         limits = throttle.validate_limits(data["rate_limit"]) if data.get("rate_limit") else None
         if "download_dir" in data:
             config.set_download_dir(data["download_dir"])  # may fail: do it before saving the rest
@@ -336,6 +353,10 @@ def update_settings():
         config.set_setting("default_format", data["default_format"])
     if "crop_thumbnail" in data:
         config.set_setting("crop_thumbnail", data["crop_thumbnail"])
+    if "auto_lyrics" in data:
+        config.set_setting("auto_lyrics", bool(data["auto_lyrics"]))
+    if "lyrics_delay" in data:
+        config.set_setting("lyrics_delay", float(data["lyrics_delay"]))
     if "rate_limit" in data:  # null / empty resets to the defaults
         config.set_setting("rate_limit", limits)
     return jsonify(_settings_payload())
@@ -522,26 +543,41 @@ def get_analysis():
 
 # Lyrics lookup: lyrics are saved to a separate .lrc file next to the audio (never written into
 # the music file). Mirrors the analysis flow: the UI queues paths, polls for results.
-lyrics_executor = ThreadPoolExecutor(max_workers=2)  # network-bound: a couple at a time
+# One lookup at a time (max_workers=1) with a configurable gap between them: a big batch fired in
+# parallel gets rate-limited by the services ("Could not reach the lyrics service").
+lyrics_executor = ThreadPoolExecutor(max_workers=1)
 lyrics_jobs = {}  # path -> {"status": queued|running|done|error, "file", "reason", "error"}
 lyrics_lock = threading.Lock()
+_lyrics_last = 0.0  # monotonic time the last lookup finished, to space the next one out
 
 
 def _lyrics_file(rel):
-    """Read the artist/title/duration/genre/album a lyrics search needs from the audio file's tags."""
+    """Read the artist/title/duration/genre/album/source a lyrics search needs from the audio file's tags.
+
+    The comment tag holds the source link the file was downloaded from (its YouTube/SoundCloud URL),
+    which the YouTube captions fallback uses.
+    """
     _, path = _safe_file(rel)
     info = tagging.read_tags(path)
     tags = info["tags"]
     return (path, tags.get("artist", ""), tags.get("title", ""), info.get("duration"),
-            tags.get("genre", ""), tags.get("album", ""))
+            tags.get("genre", ""), tags.get("album", ""), tags.get("comment", ""))
 
 
 def _run_lyrics(rel):
+    global _lyrics_last
     with lyrics_lock:
+        if lyrics_jobs.get(rel, {}).get("status") in ("done", "error"):
+            return  # already handled by an earlier queued run of the same path
         lyrics_jobs[rel]["status"] = "running"
     try:
-        path, artist, title, duration, genre, album = _lyrics_file(rel)
-        text, reason = lyrics.fetch_lyrics(artist, title, duration, genre, album)
+        path, artist, title, duration, genre, album, source_url = _lyrics_file(rel)
+        # Wait out the configured gap so consecutive lookups don't trip the services' rate limit.
+        gap = _lyrics_last + lyrics.lyrics_delay() - time.monotonic()
+        if gap > 0:
+            time.sleep(gap)
+        text, reason = lyrics.fetch_lyrics(artist, title, duration, genre, album, source_url)
+        _lyrics_last = time.monotonic()
         if text:
             sidecar = lyrics.save_lyrics(path, text, reason)
             outcome = {"status": "done", "file": sidecar.name, "reason": reason}
@@ -557,16 +593,21 @@ def _run_lyrics(rel):
         lyrics_jobs[rel] = outcome
 
 
-@app.post("/api/lyrics")
-def start_lyrics():
-    """Body: {"paths": ["rel/path.wav", ...]}. Fetches lyrics for each file and saves a .lrc sidecar."""
-    data = request.get_json(silent=True) or {}
-    for rel in [str(p) for p in data.get("paths", [])][:MAX_FILES]:
+def _enqueue_lyrics(rels):
+    """Queue a lyrics lookup for each library-relative path that isn't already queued or running."""
+    for rel in [str(p) for p in rels][:MAX_FILES]:
         with lyrics_lock:
             if lyrics_jobs.get(rel, {}).get("status") in ("queued", "running"):
                 continue
             lyrics_jobs[rel] = {"status": "queued"}
         lyrics_executor.submit(_run_lyrics, rel)
+
+
+@app.post("/api/lyrics")
+def start_lyrics():
+    """Body: {"paths": ["rel/path.wav", ...]}. Fetches lyrics for each file and saves a .lrc sidecar."""
+    data = request.get_json(silent=True) or {}
+    _enqueue_lyrics(data.get("paths", []))
     return "", 202
 
 

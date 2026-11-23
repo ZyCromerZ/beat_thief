@@ -714,6 +714,30 @@
     </div>
   </section>
 
+  <section class="box">
+    <div class="box-header">Lyrics</div>
+    <div class="setting">
+      <div class="setting-text">
+        <label for="auto-lyrics-toggle">Auto-fetch lyrics</label>
+        <div class="hint">Fetch and save .lrc lyrics for each file right after it downloads.</div>
+      </div>
+      <div class="setting-control">
+        <input type="checkbox" id="auto-lyrics-toggle">
+        <div class="msg" id="auto-lyrics-msg"></div>
+      </div>
+    </div>
+    <div class="setting">
+      <div class="setting-text">
+        <label for="lyrics-delay">Lookup delay</label>
+        <div class="hint">Seconds to wait between lookups when finding lyrics for many files, one at a time. Raise it if you get "Could not reach the lyrics service". 0 = no wait.</div>
+      </div>
+      <div class="setting-control">
+        <input class="text-input" id="lyrics-delay" type="number" min="0" max="3600" step="0.5" style="width:8rem">
+        <div class="msg" id="lyrics-delay-msg"></div>
+      </div>
+    </div>
+  </section>
+
   <details class="box">
     <summary class="box-header">Rate limit <span class="hint limit-brief" id="limit-brief"></span></summary>
     <div class="box-body">
@@ -1175,8 +1199,24 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+const doneSeen = new Set();  // job ids already reacted to as "done", to fire once per download
 async function refreshJobs() {
-  try { queueJobs = await fetch("/api/jobs").then((r) => r.json()); renderJobs(queueJobs); } catch {}
+  let jobs;
+  try { jobs = await fetch("/api/jobs").then((r) => r.json()); } catch { return; }
+  queueJobs = jobs;
+  renderJobs(queueJobs);
+  // Drop ids whose job is gone (dismissed) so the set stays bounded.
+  for (const id of doneSeen) if (!jobs.some((j) => j.id === id)) doneSeen.delete(id);
+  const newlyDone = jobs.filter((j) => j.status === "done" && !doneSeen.has(j.id));
+  if (!newlyDone.length) return;
+  newlyDone.forEach((j) => doneSeen.add(j.id));
+  // Downloads auto-fetch their lyrics server-side (when enabled), so just let the user know and
+  // refresh the library to show the .lrc files as they land.
+  if (state.autoLyrics) {
+    const n = newlyDone.reduce((a, j) => a + (j.files ? j.files.length : 0), 0);
+    if (n) toast(`Fetching lyrics for ${n} downloaded file(s)…`, "info");
+  }
+  if (!$("#page-library").hidden) loadFiles();
 }
 
 /* ---------------------------------------------------------------- Library folder */
@@ -1244,6 +1284,9 @@ function applySettings(s) {
   $("#verbose-toggle").checked = !!s.verbose;
   $("#crop-thumbnail").value = s.crop_thumbnail ?? "default";
   $("#download-crop-thumbnail").value = s.crop_thumbnail ?? "default";
+  $("#auto-lyrics-toggle").checked = !!s.auto_lyrics;
+  state.autoLyrics = !!s.auto_lyrics;
+  $("#lyrics-delay").value = s.lyrics_delay ?? 0;
 
   const l = s.rate_limit;
   rateLimit = l;
@@ -1278,6 +1321,14 @@ $("#verbose-toggle").onchange = (e) => putSettings({ verbose: e.target.checked }
 // Thumbnail crop: default / force enable / force disable.
 $("#crop-thumbnail").onchange = (e) => putSettings({ crop_thumbnail: e.target.value }, $("#crop-msg"), "Saved.");
 $("#download-crop-thumbnail").onchange = (e) => putSettings({ crop_thumbnail: e.target.value }, null, null);
+
+// Lyrics: auto-fetch after download, and the gap between lookups.
+$("#auto-lyrics-toggle").onchange = (e) => putSettings({ auto_lyrics: e.target.checked }, $("#auto-lyrics-msg"), e.target.checked ? "Will fetch lyrics after each download." : "Auto-fetch off.");
+$("#lyrics-delay").onchange = (e) => {
+  const v = Number(e.target.value);
+  if (!Number.isFinite(v) || v < 0 || v > 3600) { showMsg($("#lyrics-delay-msg"), "Enter 0 to 3600 seconds.", "error"); return; }
+  putSettings({ lyrics_delay: v }, $("#lyrics-delay-msg"), "Saved. New delay applies right away.");
+};
 
 // Rate limit
 function readLimits() {
