@@ -543,7 +543,7 @@ def _run_lyrics(rel):
         path, artist, title, duration, genre, album = _lyrics_file(rel)
         text, reason = lyrics.fetch_lyrics(artist, title, duration, genre, album)
         if text:
-            sidecar = lyrics.save_lyrics(path, text)
+            sidecar = lyrics.save_lyrics(path, text, reason)
             outcome = {"status": "done", "file": sidecar.name, "reason": reason}
             log.info("Lyrics for %s saved to %s", rel, sidecar.name)
         else:

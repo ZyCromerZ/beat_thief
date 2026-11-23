@@ -1,10 +1,11 @@
 """Fetch song lyrics and store them in a sidecar .lrc file next to the audio file.
 
 Lyrics are never written into the music file itself: they live in a separate
-"<name>.lrc" file beside it, so the audio is left untouched. The lookup uses the
-LRCLIB API (https://lrclib.net), which is free and needs no API key. It first
-tries to match the exact track by artist + title + duration; if that fails it
-falls back to progressively looser searches.
+"<name>.lrc" file beside it, so the audio is left untouched. The lookup uses two
+free, key-less services in order: the LRCLIB API (https://lrclib.net) first, and
+then lrc.red (https://lrc.red) as a fallback when LRCLIB has nothing. Each lookup
+first tries to match the exact track by artist + title + duration; if that fails
+it falls back to progressively looser searches.
 
 Nightcore (and other sped-up) uploads are common and awkward for a lyrics lookup:
 the "artist" is often the upload channel (e.g. "NightcoreClarity"), the title
@@ -27,6 +28,11 @@ from .log import log, verbose
 _LRC_BASE = "https://lrclib.net/api"
 _SEARCH_URL = f"{_LRC_BASE}/search"
 _GET_URL = f"{_LRC_BASE}/get"
+# lrc.red endpoints. Free to use; it asks that we identify ourselves via the User-Agent
+# and credit it (a link to https://lrc.red) wherever its lyrics are used.
+_LRCRED_BASE = "https://lrc.red"
+_LRCRED_SEARCH_URL = f"{_LRCRED_BASE}/search.json"
+_LRCRED_TRACK_URL = f"{_LRCRED_BASE}/s"
 _MAX_BYTES = 2_000_000
 _TIMEOUT = 15
 _UA = "BeatThief/1.0 (https://github.com/Kilo-Org/beat_thief)"
@@ -41,6 +47,16 @@ def _http_json(url: str):
         raise RuntimeError("Empty response from the lyrics service.")
     import json
     return json.loads(data.decode("utf-8", "replace"))
+
+
+def _http_text(url: str) -> str:
+    """GET a URL and return the body as text. Raises on any failure."""
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+        data = resp.read(_MAX_BYTES)
+    if not data:
+        raise RuntimeError("Empty response from the lyrics service.")
+    return data.decode("utf-8", "replace")
 
 
 def _is_synced(text: str) -> bool:
@@ -145,6 +161,122 @@ def _from_hits(hits, exact_title: str):
     return _pick(hits) if hits else None
 
 
+def _lrc_red_search(q: str):
+    """Search lrc.red's catalog (GET /search.json) and return the list of hits."""
+    data = _http_json(f"{_LRCRED_SEARCH_URL}?{urllib.parse.urlencode({'q': q})}")
+    hits = data.get("hits") if isinstance(data, dict) else None
+    return hits if isinstance(hits, list) else []
+
+
+def _lrc_red_pick(hits, artist: str, title: str, duration: float):
+    """Choose the hit that best matches the wanted title/artist/duration from lrc.red."""
+    want_title = _norm(title)
+    candidates = [h for h in hits if _norm(h.get("title")) == want_title]
+    if not candidates:
+        return None
+    want_artist = _norm(artist)
+    dur = int(duration) if duration else None
+
+    def score(h):
+        s = 0
+        if want_artist and want_artist in (_norm(h.get("artist")) or ""):
+            s += 2
+        if dur and h.get("duration"):
+            try:
+                if abs(float(h["duration"]) - dur) <= 5:
+                    s += 2
+            except (TypeError, ValueError):
+                pass
+        return s
+
+    candidates.sort(key=score, reverse=True)
+    return candidates[0]
+
+
+# A line of a lrc.red .lrc / .ttml: '[mm:ss.xx]' line stamps and '<mm:ss.xx>' word stamps.
+_LRC_LINE_STAMP = re.compile(r"\[\d{1,3}:\d{2}([.,]\d{1,3})?\]")
+_LRC_WORD_STAMP = re.compile(r"<\d{1,3}:\d{2}([.,]\d{1,3})?>")
+
+
+def _strip_lrc_times(text: str) -> str:
+    """Turn a synced/enhanced .lrc into plain text by removing its line and word timestamps."""
+    text = _LRC_WORD_STAMP.sub("", text)
+    text = _LRC_LINE_STAMP.sub("", text)
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(lines).strip()
+
+
+# A line entry of a lrc.red .lyricsfile.yaml ('  - text: "..."'); the deeper word entries ('      - text:')
+# and the metadata keys ('  title:') are deliberately not matched, so only the full line texts remain.
+_LYICSFILE_LINE = re.compile(r'^  - text:\s*(?P<q>["\']?)(?P<text>.*?)(?P=q)\s*$')
+
+
+def _lyricsfile_to_text(yaml_text: str) -> str:
+    """Extract the plain line texts from a lrc.red .lyricsfile.yaml (no PyYAML needed)."""
+    out = []
+    for raw in (yaml_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        m = _LYICSFILE_LINE.match(raw)
+        if not m:
+            continue
+        text = m.group("text")
+        if m.group("q") == '"':  # unescape the common YAML double-quote escapes
+            text = text.replace('\\"', '"').replace("\\n", "\n").replace("\\/", "/").replace("\\\\", "\\")
+        elif m.group("q") == "'":
+            text = text.replace("''", "'")
+        out.append(text)
+    return "\n".join(out).strip()
+
+
+def _lrc_red_lookup(artist: str, title: str, duration: float = None):
+    """Fetch lyrics from lrc.red for the given track. Returns the text or None.
+
+    lrc.red keys its catalog by ISRC, so this searches the catalog for a matching track and then
+    downloads that track's lyrics. It returns synced lyrics when the track is timed; otherwise
+    (typically non-official / untimed songs) it falls back to plain text, read from a non-synced
+    .lrc or, failing that, from the track's .lyricsfile.yaml.
+    """
+    if not title:
+        return None
+    # The "q" field is "title or artist", so search on the title, then on "artist title" as a
+    # fallback. Only accept a near-exact title match so a looser search can't return a different
+    # song's lyrics.
+    queries = [title]
+    if artist:
+        queries.append(f"{artist} {title}")
+    for q in queries:
+        try:
+            hits = _lrc_red_search(q)
+        except Exception as e:
+            log.debug("lrc.red search (%s) failed: %s", q, e, exc_info=verbose())
+            return None
+        best = _lrc_red_pick(hits, artist, title, duration)
+        if not best or not best.get("isrc"):
+            continue
+        isrc = best["isrc"]
+        # 1) Synced .lrc (official / timed tracks). A non-synced .lrc is kept as plain text.
+        try:
+            text = _http_text(f"{_LRCRED_TRACK_URL}/{isrc}.lrc")
+        except Exception as e:
+            log.debug("lrc.red lrc fetch (%s) failed: %s", isrc, e, exc_info=verbose())
+            text = ""
+        if text:
+            if _is_synced(text):
+                return text
+            plain = _strip_lrc_times(text)
+            if plain:
+                return plain
+        # 2) No usable .lrc: read the line texts straight out of the .lyricsfile.yaml as plain text.
+        try:
+            yaml_text = _http_text(f"{_LRCRED_TRACK_URL}/{isrc}.lyricsfile.yaml")
+        except Exception as e:
+            log.debug("lrc.red lyricsfile fetch (%s) failed: %s", isrc, e, exc_info=verbose())
+            continue
+        plain = _lyricsfile_to_text(yaml_text)
+        if plain:
+            return plain
+    return None
+
+
 def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = None, album: str = None):
     """Return (text, source) where text is plain or synced lyrics and source is a short label.
 
@@ -195,11 +327,11 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
         except Exception as e:
             log.debug("LRCLIB get (%s - %s) failed: %s", artist, title, e, exc_info=verbose())
 
-    # 2) Search. With a real artist, require it (a title-only hit would likely be a different
-    # song). Without one, or for a nightcore (whose "artist" is often just a channel), also try
-    # the title alone and accept only a near-exact title match, then a free-text search.
-    # The album is an extra clue when the artist-based search fails: title + album + artist, then
-    # title + album.
+    # 2) Search. With a real artist, require it first (a title-only hit would likely be a different
+    # song). The album is an extra clue when the artist-based search fails: title + album + artist,
+    # then title + album. Finally, as a last resort, try the title alone: this is what rescues
+    # non-official uploads (nightcore, fan covers, label/channel rips) whose "artist" matches no
+    # record. It accepts only a near-exact title, so it still can't return a different song.
     attempts = []
     for name in artists:
         attempts.append(({"track_name": title, "artist_name": name}, None))
@@ -207,9 +339,8 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
         attempts.append(({"track_name": title, "album_name": album, "artist_name": artists[0]}, None))
     if album:
         attempts.append(({"track_name": title, "album_name": album}, title))
-    if not artist or is_nightcore:
-        attempts.append(({"track_name": title}, title))
-        attempts.append(({"q": title}, title))
+    attempts.append(({"track_name": title}, title))
+    attempts.append(({"q": title}, title))
 
     last_reason = "No match found."
     for params, exact in attempts:
@@ -217,7 +348,8 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
             hits = _search(params)
         except Exception as e:
             log.debug("LRCLIB search (%s) failed: %s", params, e, exc_info=verbose())
-            return None, "Could not reach the lyrics service."
+            last_reason = "Could not reach the lyrics service."
+            break
 
         best = _from_hits(hits, exact)
         if not best or best.get("instrumental"):
@@ -227,6 +359,11 @@ def fetch_lyrics(artist: str, title: str, duration: float = None, genre: str = N
         text = best.get("syncedLyrics") or best.get("plainLyrics")
         if text:
             return text, "search match"
+
+    # 3) LRCLIB came up empty (or was unreachable): fall back to lrc.red before giving up.
+    red = _lrc_red_lookup(artist, title, dur)
+    if red:
+        return red, "lrc.red"
     return None, last_reason
 
 
@@ -237,8 +374,15 @@ def sidecar_path(path) -> "Path":
     return p.with_suffix(".lrc")
 
 
-def save_lyrics(path, text: str) -> "Path":
-    """Write the lyrics as a .lrc sidecar next to `path`. Returns the sidecar path."""
+def save_lyrics(path, text: str, source: str = None) -> "Path":
+    """Write the lyrics as a .lrc sidecar next to `path`. Returns the sidecar path.
+
+    When the lyrics came from lrc.red, a credit line linking back to https://lrc.red is written as
+    an LRC metadata tag at the top of the file, as the lrc.red API terms require.
+    """
     lrc = sidecar_path(path)
-    lrc.write_text(_as_lrc(text), encoding="utf-8")
+    body = _as_lrc(text)
+    if source == "lrc.red":
+        body = f"[re:{_LRCRED_BASE}]\n{body}"
+    lrc.write_text(body, encoding="utf-8")
     return lrc
