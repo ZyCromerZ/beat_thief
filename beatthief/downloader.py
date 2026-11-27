@@ -23,14 +23,23 @@ def default_format() -> str:
     return fmt if fmt in FORMATS else AUDIO_FORMAT
 
 
-def _crop_thumbnail_pref(url: str) -> bool:
-    """Whether to square-crop the thumbnail: forced on/off via config, otherwise the platform default."""
+def _thumbnail_mode(url: str) -> str:
+    """How to make the cover art square.
+
+    'crop'   -> center 1:1 crop (1280x720 becomes 720x720).
+    'extend' -> pad to a centered 1:1 square with a transparent background
+                (1280x720 becomes 1280x1280), keeping the whole image.
+    'none'   -> leave the thumbnail untouched.
+
+    Forced on/off via config; otherwise the platform default. Any non-cropping
+    choice extends so the cover stays 1280x1280 instead of a bare 1280x720.
+    """
     pref = get_setting("crop_thumbnail", "default")
     if pref == "enable":
-        return True
+        return "crop"
     if pref == "disable":
-        return False
-    return should_crop_thumbnail(url)
+        return "extend"
+    return "crop" if should_crop_thumbnail(url) else "extend"
 
 
 MAX_PLAYLIST = 500  # tracks taken from one playlist
@@ -60,7 +69,7 @@ def list_playlist(url: str, source: str):
     return tracks
 
 
-def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None, crop_thumbnail=False):
+def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=None, start=None, end=None, thumbnail_mode="none"):
     cropped = start is not None or end is not None
     if audio_format == "opus":
         set_audio_format = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/best"
@@ -68,11 +77,22 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
         set_audio_format = "bestaudio/best"
 
     postprocessor_args = None
+    thumbnail_format = "png"
 
-    if crop_thumbnail:
+    if thumbnail_mode == "crop":
         postprocessor_args = {
             # Crops the thumbnail to a centered 1:1 square
             "thumbnailsconvertor": ["-vf", "crop=min(iw\\,ih):min(iw\\,ih)"]
+    }
+    elif thumbnail_mode == "extend":
+        # Pads the thumbnail to a centered 1:1 square with a transparent background
+        # (1280x720 -> 1280x1280) instead of cropping the sides away. PNG keeps the alpha.
+        # format=rgba must come first so the pad colour's alpha is honoured (the source
+        # thumbnail usually has no alpha channel).
+        postprocessor_args = {
+            "thumbnailsconvertor": ["-vf",
+                "format=rgba,pad=max(iw\\,ih):max(iw\\,ih):(ow-iw)/2:(oh-ih)/2:color=black@0"]
+        # thumbnail_format = "png"
     }
 
     opts = {
@@ -82,9 +102,9 @@ def _build_opts(workdir: str, playlist: bool, audio_format: str, on_progress=Non
             "preferredcodec": audio_format,
             "preferredquality": FORMATS[audio_format],
         },{
-            # Converts/processes the thumbnail so postprocessor_args can crop it
+            # Converts/processes the thumbnail so postprocessor_args can crop/extend it
             "key": "FFmpegThumbnailsConvertor",
-            "format": "jpg",
+            "format": thumbnail_format,
             "when": "before_dl",
         }],
         "postprocessor_args": postprocessor_args,
@@ -137,12 +157,12 @@ def fetch_audio(url: str, playlist: bool = False, on_progress=None, on_wait=None
     `start` / `end` (seconds, either optional) download only that part of the track.
     Works for YouTube, SoundCloud and anything else yt-dlp can handle.
     """
-    crop = _crop_thumbnail_pref(url)
+    crop = _thumbnail_mode(url)
     audio_format = audio_format or default_format()
     if audio_format not in FORMATS:
         raise ValueError(f"Unsupported format: {audio_format}")
 
-    log.info("Downloading %s as %s (thumbnail crop: %s)", url, audio_format, crop)
+    log.info("Downloading %s as %s (thumbnail: %s)", url, audio_format, crop)
     throttle.wait_turn(detect_source(url) or "other", on_wait)
     log.debug("Rate limiter released %s", url)
 
